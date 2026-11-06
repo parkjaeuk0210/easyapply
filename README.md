@@ -16,6 +16,16 @@
 
 한도를 켜려면 Vercel Production에 `EASYAPPLY_USAGE_LIMITS=on`을 추가하고 재배포합니다. 이때 IP·세션별 10분당 분석 8회·판정 24회 한도는 코드에 고정되어 있어(`src/lib/server/guard.ts`의 `quota()`) 같은 Wi-Fi(같은 공인 IP)를 쓰는 심사위원들이 함께 걸릴 수 있습니다. 전체 일일·동시 한도는 등록된 `EASYAPPLY_DAILY_AI_LIMIT`·`EASYAPPLY_MAX_CONCURRENT` 값을, IP·세션별 24시간 한도는 변수가 없으므로 기본 20회를 따릅니다.
 
+## 심사용 문서 (docs/)
+
+- [docs/01-기획.md](docs/01-기획.md) — 문제, 대상 사용자, "그냥 ChatGPT에 올리면 안 되는 이유", 해법의 원칙, 범위, 성공 기준, 알려진 한계, AI 전공과의 연결 (A4 1장)
+- [docs/02-AI-활용-과정.md](docs/02-AI-활용-과정.md) — 하루의 흐름, 사람·Claude·Codex 역할 분담, 핵심 결정 5개와 근거 수치, 검증 방법, 비용과 운영 선택, 실패에서 배운 것, 남은 과제 (A4 2장)
+- [docs/03-오류-유형표.md](docs/03-오류-유형표.md) — 오류 15유형: 증상·원인·발견 경위·수정·현재 상태
+- [docs/QUESTIONS-FOR-OWNER.md](docs/QUESTIONS-FOR-OWNER.md) — 제작자만 답할 수 있는 빈칸 10개. 본문의 `[확인 필요: 질문 N]`이 이 번호입니다
+- [docs/evidence/](docs/evidence/) — 위 문서의 사실 근거: 출처가 달린 타임라인(TIMELINE), 결정 기록(DECISIONS), 오류 원기록(ERRORS), 출처 공백(GAPS). 보고서 원본 경로는 로컬 `reports/` 폴더 기준입니다
+
+숫자와 시각은 보고서·로그·git 스냅샷에 있는 것만 썼고, 출처가 서로 다르면 보수적인 값을 쓰고 각주로 남겼습니다.
+
 ## 로컬 실행
 
 Node.js 22 이상이 필요합니다.
