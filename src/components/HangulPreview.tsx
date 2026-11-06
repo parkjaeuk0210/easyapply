@@ -48,7 +48,7 @@ export default function HangulPreview({ file, zoom, onTextView, initialPage = 0,
       onPageChange?.(current.file, number);
       setError(null);
     } catch {
-      setError({ file: current.file, message: "이 쪽의 서식을 표시하지 못했어요. 추출 텍스트를 확인하거나 PDF로 저장해 다시 올려 주세요." });
+      setError({ file: current.file, message: "이 쪽을 표시하지 못했어요. ‘글자만 보기’로 확인해 주세요." });
     }
   }, [onPageChange]);
 
@@ -66,7 +66,7 @@ export default function HangulPreview({ file, zoom, onTextView, initialPage = 0,
         renderPage(Math.max(0, Math.min(initialPageRef.current, pages - 1)));
       } catch {
         owned?.free(); owned = null;
-        if (!cancelled) setError({ file, message: `이 문서의 서식을 미리보기로 열지 못했어요. 추출 텍스트를 확인하거나 PDF로 저장해 다시 올려 주세요. 미리보기는 ${MAX_DOCUMENT_PAGES}쪽까지 지원해요.` });
+        if (!cancelled) setError({ file, message: "이 문서는 원래 모양으로 보여 드릴 수 없어요. ‘글자만 보기’로 확인해 주세요." });
       }
     })();
     return () => {
@@ -78,21 +78,20 @@ export default function HangulPreview({ file, zoom, onTextView, initialPage = 0,
   }, [file, renderPage]);
 
   if (error?.file === file) return <div className="rounded-xl bg-white p-4">
-    <p role="alert" className="text-sm leading-relaxed text-ink-2">{error.message}</p>
-    <button onClick={onTextView} className="mt-3 rounded-lg bg-brand px-3 py-2 text-sm font-semibold text-white">추출 텍스트 보기</button>
+    <p role="alert" className="text-[15px] leading-relaxed text-ink-2">{error.message}</p>
+    <button onClick={onTextView} className="mt-3 rounded-lg bg-brand px-4 py-2 text-[15px] font-semibold text-white">글자만 보기</button>
   </div>;
 
-  if (!page || page.file !== file) return <p role="status" className="p-6 text-center text-sm text-muted">서식 미리보기를 준비하고 있어요… 처음에는 조금 걸릴 수 있어요.</p>;
+  if (!page || page.file !== file) return <p role="status" className="p-6 text-center text-[15px] text-ink-2">원문을 불러오고 있어요…</p>;
 
   return <div className="space-y-3">
-    <p className="rounded-xl bg-white p-3 text-xs leading-relaxed text-muted">글꼴과 줄바꿈은 원본과 다를 수 있어요. 분석 근거는 추출 텍스트에서 확인해 주세요.</p>
     <nav className="flex items-center justify-between rounded-xl bg-white px-3 py-2" aria-label="문서 쪽 이동">
-      <button onClick={() => renderPage(page.page - 1)} disabled={page.page === 0} className="rounded-lg px-3 py-1.5 text-sm font-medium text-ink-2 disabled:opacity-30">이전 쪽</button>
-      <span aria-live="polite" className="text-sm tabular-nums text-ink-2">{page.page + 1} / {page.pages}쪽</span>
-      <button onClick={() => renderPage(page.page + 1)} disabled={page.page + 1 === page.pages} className="rounded-lg px-3 py-1.5 text-sm font-medium text-ink-2 disabled:opacity-30">다음 쪽</button>
+      <button onClick={() => renderPage(page.page - 1)} disabled={page.page === 0} className="rounded-lg px-3 py-1.5 text-[15px] font-medium text-ink-2 disabled:opacity-30">이전 쪽</button>
+      <span aria-live="polite" className="text-[15px] tabular-nums text-ink-2">{page.page + 1} / {page.pages}쪽</span>
+      <button onClick={() => renderPage(page.page + 1)} disabled={page.page + 1 === page.pages} className="rounded-lg px-3 py-1.5 text-[15px] font-medium text-ink-2 disabled:opacity-30">다음 쪽</button>
     </nav>
     {/* SVG is an image resource, never active markup in the application's DOM. */}
     {/* eslint-disable-next-line @next/next/no-img-element -- Local SVG Blob URLs cannot use the image optimizer. */}
-    <img src={page.url} alt={`${file.name} ${page.page + 1}쪽 서식 미리보기`} className="h-auto max-w-none rounded-sm bg-white shadow-sm" style={{ width: `${zoom * 100}%` }} onError={() => setError({ file, message: "이 브라우저에서 서식을 표시하지 못했어요. 추출 텍스트를 확인해 주세요." })} />
+    <img src={page.url} alt={`${file.name} ${page.page + 1}쪽`} className="h-auto max-w-none rounded-sm bg-white shadow-sm" style={{ width: `${zoom * 100}%` }} onError={() => setError({ file, message: "이 쪽을 표시하지 못했어요. ‘글자만 보기’로 확인해 주세요." })} />
   </div>;
 }

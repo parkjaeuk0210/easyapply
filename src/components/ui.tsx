@@ -1,54 +1,86 @@
 "use client";
 
 import { createContext, useContext } from "react";
-import type { Evidence } from "@/lib/schema";
+import type { Analysis, Evidence } from "@/lib/schema";
 import type { Located } from "@/lib/textmatch";
+import { daysUntil, mainDeadline, shortDate, todayLocalISO } from "@/lib/dates";
+
+// ── 날짜 ────────────────────────────────────────────────────────
+
+/** "2026-05-17" → "5월 17일(일)". 올해가 아니면 연도를 붙인다. */
+export function koDate(iso: string | null | undefined, weekday = true) {
+  const short = shortDate(iso)?.match(/^(\d+)\/(\d+)(\(.\))$/);
+  if (!iso || !short) return null;
+  const year = iso.slice(0, 4) === todayLocalISO().slice(0, 4) ? "" : `${iso.slice(0, 4)}년 `;
+  return `${year}${short[1]}월 ${short[2]}일${weekday ? short[3] : ""}`;
+}
+
+/** 접수 마감을 사람이 읽는 한 줄로. 마감일을 못 찾으면 null. */
+export function deadlineInfo(a: Analysis) {
+  const deadline = mainDeadline(a);
+  const days = daysUntil(deadline?.date_iso);
+  if (!deadline || days === null) return null;
+  if (days < 0) return { expired: true, days, text: `이 공고는 ${koDate(deadline.date_iso, false)}에 접수가 끝났어요.`, left: null };
+  return {
+    expired: false,
+    days,
+    text: `${koDate(deadline.date_iso)}${deadline.time ? ` ${deadline.time}` : ""}까지 신청`,
+    left: days === 0 ? "오늘 마감" : `${days}일 남았어요`,
+  };
+}
 
 // ── 근거(원문) 컨텍스트 ─────────────────────────────────────────
 
 type EvidenceCtx = {
   locate: (e: Evidence) => Located;
-  show: (e: Evidence) => void;
-  activeQuote: string | null;
-  unit?: string;
+  show: (group: Evidence[]) => void;
+  activeId: string | null;
+  /** PDF·사진처럼 쪽 번호가 실제 쪽과 같은지 */
+  paged: boolean;
 };
 export const EvidenceContext = createContext<EvidenceCtx>({
   locate: (e) => ({ status: "unknown", page: e.page, items: [], ranges: {} }),
   show: () => {},
-  activeQuote: null,
+  activeId: null,
+  paged: true,
 });
 
-export function EvidenceChips({ evidence, className = "" }: { evidence: Evidence[]; className?: string }) {
-  const { locate, show, activeQuote, unit = "쪽" } = useContext(EvidenceContext);
+export const evidenceId = (group: Evidence[]) => group.map((e) => `${e.page}|${e.quote}`).join("\n");
+
+/** 항목마다 "원문 보기" 버튼 하나. 근거가 여러 쪽에 걸칠 때만 쪽마다 버튼을 나눈다. */
+export function EvidenceLinks({ evidence, className = "" }: { evidence: Evidence[]; className?: string }) {
+  const { locate, show, activeId, paged } = useContext(EvidenceContext);
   if (!evidence?.length) return null;
+  const groups = new Map<number, { evidence: Evidence[]; missing: boolean }>();
+  for (const e of evidence) {
+    const loc = locate(e);
+    const group = groups.get(loc.page) ?? { evidence: [], missing: true };
+    group.evidence.push(e);
+    group.missing &&= loc.status === "none";
+    groups.set(loc.page, group);
+  }
+  const list = [...groups.entries()];
   return (
-    <div className={`flex flex-wrap gap-1.5 ${className}`}>
-      {evidence.map((e, i) => {
-        const loc = locate(e);
-        const on = activeQuote === e.quote;
-        const mark = { exact: "✓", fuzzy: "≈", none: "?", unknown: "" }[loc.status];
-        const tone = {
-          exact: "text-ok",
-          fuzzy: "text-warn",
-          none: "text-bad",
-          unknown: "text-muted",
-        }[loc.status];
+    <div className={`flex flex-wrap items-center gap-x-3 gap-y-2 ${className}`}>
+      {list.map(([page, g], i) => {
+        const id = evidenceId(g.evidence);
+        const label = list.length === 1 ? "원문 보기" : paged ? `원문 ${page}쪽` : `원문 보기 ${i + 1}`;
         return (
-          <button
-            key={i}
-            type="button"
-            onClick={() => show(e)}
-            title={`“${e.quote}”`}
-            className={`group inline-flex max-w-full items-center gap-1 rounded-md border px-2 py-[3px] text-[11.5px] font-medium transition ${
-              on
-                ? "border-brand bg-brand-soft text-brand-ink"
-                : "border-line bg-surface-2 text-ink-2 hover:border-brand/40 hover:bg-brand-soft hover:text-brand-ink"
-            }`}
-          >
-            <QuoteIcon />
-            <span>원문 {loc.page}{unit}</span>
-            {mark && <span className={`${tone} font-bold`}>{mark}</span>}
-          </button>
+          <span key={id} className="inline-flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => show(g.evidence)}
+              title={g.evidence.map((e) => `“${e.quote}”`).join("\n")}
+              className={`rounded-lg border px-3 py-1.5 text-sm font-medium transition ${
+                activeId === id
+                  ? "border-brand bg-brand-soft text-brand-ink"
+                  : "border-line bg-surface text-ink-2 hover:border-brand/50 hover:text-brand-ink"
+              }`}
+            >
+              {label}
+            </button>
+            {g.missing && <span className="text-sm text-muted">원문에서 못 찾았어요</span>}
+          </span>
         );
       })}
     </div>
@@ -61,57 +93,15 @@ export function Card({ children, className = "" }: { children: React.ReactNode; 
   return <div className={`rounded-2xl border border-line bg-surface ${className}`}>{children}</div>;
 }
 
-export function SectionTitle({ children, sub }: { children: React.ReactNode; sub?: React.ReactNode }) {
-  return (
-    <div className="mb-3 flex items-baseline justify-between gap-3">
-      <h3 className="text-[15px] font-bold tracking-tight text-ink">{children}</h3>
-      {sub && <span className="text-xs text-muted">{sub}</span>}
-    </div>
-  );
-}
-
-type Tone = "brand" | "ok" | "warn" | "bad" | "neutral";
-const TONES: Record<Tone, string> = {
-  brand: "bg-brand-soft text-brand-ink",
-  ok: "bg-ok-soft text-ok",
-  warn: "bg-warn-soft text-warn",
-  bad: "bg-bad-soft text-bad",
-  neutral: "bg-surface-2 text-ink-2 border border-line",
-};
-export function Pill({ tone = "neutral", children, className = "" }: { tone?: Tone; children: React.ReactNode; className?: string }) {
-  return (
-    <span className={`inline-flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11.5px] font-semibold ${TONES[tone]} ${className}`}>
-      {children}
-    </span>
-  );
+export function SectionTitle({ children }: { children: React.ReactNode }) {
+  return <h3 className="mb-3 text-[17px] font-bold tracking-tight text-ink">{children}</h3>;
 }
 
 export const STATUS = {
-  met: { label: "충족", tone: "ok" as Tone, icon: "✓" },
-  check: { label: "확인 필요", tone: "warn" as Tone, icon: "?" },
-  not_met: { label: "미충족", tone: "bad" as Tone, icon: "✕" },
+  met: { label: "충족", className: "text-ok" },
+  check: { label: "확인 필요", className: "text-warn" },
+  not_met: { label: "미충족", className: "text-bad" },
 };
-
-export function StatusPill({ status }: { status: keyof typeof STATUS }) {
-  const s = STATUS[status];
-  return (
-    <Pill tone={s.tone}>
-      <span aria-hidden>{s.icon}</span>
-      {s.label}
-    </Pill>
-  );
-}
-
-export function QuoteIcon() {
-  return (
-    <svg width="11" height="11" viewBox="0 0 12 12" aria-hidden className="shrink-0 opacity-70">
-      <path
-        d="M1.5 7.2C1.5 5 2.6 3.4 4.6 2.6l.4.8C3.9 4 3.4 4.8 3.3 5.7h1.6v3.8H1.5zm5.6 0c0-2.2 1.1-3.8 3.1-4.6l.4.8c-1.1.6-1.6 1.4-1.7 2.3h1.6v3.8H7.1z"
-        fill="currentColor"
-      />
-    </svg>
-  );
-}
 
 export function Logo() {
   return (

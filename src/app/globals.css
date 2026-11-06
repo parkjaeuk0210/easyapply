@@ -6,7 +6,7 @@
   --surface-2: #f8f9fb;
   --ink: #15181e;
   --ink-2: #3b414c;
-  --muted: #6a7180;
+  --muted: #5d6472;
   --line: #e2e6ec;
   --line-strong: #cfd5de;
   --brand: #2f5be7;
@@ -52,6 +52,8 @@ html {
 body {
   background: var(--bg);
   color: var(--ink);
+  font-size: 16px;
+  line-height: 1.6;
   font-family: var(--font-sans);
   word-break: keep-all;
   overflow-wrap: anywhere;
@@ -87,7 +89,7 @@ mark.ea-line {
 .source-dialog:modal { overscroll-behavior: contain; }
 .source-dialog::backdrop { overflow: hidden; overscroll-behavior: contain; }
 
-/* 판정·조건별 사유·검색 제안과 체크리스트를 함께 인쇄 */
+/* 판정·조건별 결과·체크리스트를 함께 인쇄 */
 @media print {
   body { background: #fff; }
   body * { visibility: hidden; }

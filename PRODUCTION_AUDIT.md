@@ -2,11 +2,11 @@
 
 점검일: 2026-11-06. 대상: `/Users/online/easyapply`의 Next.js 앱.
 
-## 현재 운영 상태 (2026-11-06 23:00 KST 기준)
+## 현재 운영 상태 (2026-11-07 00:40 KST 기준)
 
 이 절만 현재 사실입니다. 아래 절들은 작성 당시의 기록이며 그 안의 OpenAI 모델·테스트 수·한도 수치는 당시 값입니다.
 
-- 배포: 공개 주소 https://easyapply-five.vercel.app 은 Production `dpl_927pMAdsdCdn4Hritx5VS6G1DguL`(22:59:02 생성)를 가리킵니다. Claude 전환 배포는 22:27 `dpl_EJMzD6oShTJnCn4rgffiuyjH2nbZ`입니다. 마지막 소스 수정(22:52:44 `src/components/SourceViewer.tsx`)이 이 배포 생성보다 앞서므로 운영 빌드는 현재 소스 기준으로 봅니다. 다만 상태 API에 빌드 ID가 없어 산출물 단위의 일치는 확인하지 않았습니다.
+- 배포: 공개 주소 https://easyapply-five.vercel.app 은 Production `dpl_5eQuXZrXd5P6SaEsGtDUjqkmvXBC`(11-07 00:36:46 생성)를 가리킵니다. 이 배포는 22:59 배포(`dpl_927pMAdsdCdn4Hritx5VS6G1DguL`) 소스에 11-06 23:50 ~ 11-07 00:02의 UI 정리(파일 11개: `src/components/*`, `src/app/layout.tsx`, `src/app/globals.css`, `src/lib/client-api.ts`, `tests/ui-feedback.test.ts`)를 더한 것으로, 현재 작업 폴더와 같습니다(00:02 이후 소스 변경 없음). Claude 전환 배포는 22:27 `dpl_EJMzD6oShTJnCn4rgffiuyjH2nbZ`입니다. 승격 전 확인: 테스트 112/112, 타입체크 통과, 상태 API configured, 첫 화면 HTML에 새 문구 포함·제공자 배지 없음. 상태 API에 빌드 ID가 없어 산출물 단위의 일치는 확인하지 않았습니다. 되돌리기: `vercel promote https://easyapply-p5ygw3s0t-feras-projects-59a977f0.vercel.app`.
 - AI: Anthropic API `claude-opus-5-5`, 추론 `medium`, 처리 속도 `fast`(23:00 상태 API `provider:"api"`, `ready:true`). Production에는 `OPENAI_API_KEY`와 OpenAI 설정 3개도 남아 있지만 `EASYAPPLY_PROVIDER=api`라 사용하지 않습니다.
 - 호출 한도: **해제**(`usage_limits_enabled:false`). Production에 `EASYAPPLY_USAGE_LIMITS`, `EASYAPPLY_DAILY_IP_AI_LIMIT`, `EASYAPPLY_DAILY_SESSION_AI_LIMIT`, `EASYAPPLY_ACCESS_CODE`가 없어 이용 코드 없이 세션을 받고, Redis로 같은 세션의 중복 실행만 막습니다. 켜려면 `EASYAPPLY_USAGE_LIMITS=on`을 추가하고 재배포합니다. 이때 IP·세션별 10분당 분석 8회·판정 24회는 코드 고정값(`src/lib/server/guard.ts:160`)이라 같은 Wi-Fi의 심사위원들이 함께 걸릴 수 있습니다. 전체 일일·동시 한도는 등록된 `EASYAPPLY_DAILY_AI_LIMIT`·`EASYAPPLY_MAX_CONCURRENT` 값을, IP·세션별 24시간 한도는 기본 20회를 따릅니다.
 - 업로드·형식: 합계 24 MiB, 함수 직접 전송 4 MiB, 초과분은 비공개 Blob(`large_uploads:true`). PDF·HWP·HWPX·JPG·PNG·WEBP·GIF.

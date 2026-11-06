@@ -7,8 +7,10 @@ export type Source =
 
 export type ActiveEvidence = {
   key: number;
+  /** 같은 버튼에서 나온 근거 묶음을 구별하는 값 */
+  id: string;
   page: number;
-  quote: string;
+  quotes: string[];
   items: number[];
   ranges: Located["ranges"];
   status: Located["status"];

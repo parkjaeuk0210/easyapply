@@ -12,7 +12,7 @@ import type { ActiveEvidence, Source } from "./types";
 
 const HangulPreview = dynamic(() => import("./HangulPreview"), {
   ssr: false,
-  loading: () => <p role="status" className="p-6 text-center text-sm text-muted">서식 미리보기 불러오는 중…</p>,
+  loading: () => <p role="status" className="p-6 text-center text-[15px] text-ink-2">원문을 불러오고 있어요…</p>,
 });
 
 // workerSrc는 react-pdf 컴포넌트를 쓰는 같은 모듈에서 지정해야 한다.
@@ -27,9 +27,10 @@ type Props = {
   onClose?: () => void;
 };
 
+const tool = "rounded-lg border border-line px-3 py-1.5 text-[15px] font-medium text-ink-2 hover:bg-surface-2 disabled:opacity-40";
+
 export default function SourceViewer({ source, transcript, active, onIndex, onClose }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
-  const [pageCount, setPageCount] = useState(source.kind === "images" ? source.urls.length : 0);
   const [zoom, setZoom] = useState(1);
   const originalFile = source.kind === "text" ? source.originalFile : undefined;
   const [previewPosition, setPreviewPosition] = useState<{ file: File; page: number } | null>(null);
@@ -44,72 +45,37 @@ export default function SourceViewer({ source, transcript, active, onIndex, onCl
 
   return (
     <div className="flex h-full flex-col overflow-hidden rounded-none bg-surface lg:rounded-2xl lg:border lg:border-line">
-      <div className="flex items-center gap-2 border-b border-line px-4 py-3">
-        <DocIcon />
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-3">
         <div className="min-w-0 flex-1">
-          <div className="text-[13px] font-semibold text-ink">{source.kind === "text" ? "공고문 확인" : "공고문 원문"}</div>
-          <div className="truncate text-xs text-muted">
-            {source.kind !== "images" ? source.name : `이미지 ${source.urls.length}장`}
-            {source.kind !== "text" && pageCount ? ` · ${pageCount}쪽` : ""}
-          </div>
+          <h2 className="text-[16px] font-semibold text-ink">공고문 원문</h2>
+          <p className="truncate text-[14px] text-ink-2">{source.kind !== "images" ? source.name : `사진 ${source.urls.length}장`}</p>
         </div>
-        {(source.kind !== "text" || showPreview) && <div className="flex items-center rounded-lg border border-line" role="group" aria-label="확대/축소">
-          <button
-            onClick={() => setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)))}
-            disabled={zoom <= 1}
-            className="px-2.5 py-1 text-sm font-semibold text-ink-2 disabled:opacity-30"
-            aria-label="축소"
-          >
-            −
-          </button>
-          <span className="w-10 text-center text-[11px] tabular-nums text-muted">{Math.round(zoom * 100)}%</span>
-          <button
-            onClick={() => setZoom((z) => Math.min(3, z + 0.5))}
-            disabled={zoom >= 3}
-            className="px-2.5 py-1 text-sm font-semibold text-ink-2 disabled:opacity-30"
-            aria-label="확대"
-          >
-            +
-          </button>
-        </div>}
-        {originalFile && <button onClick={() => {
-          const url = URL.createObjectURL(originalFile);
-          const anchor = document.createElement("a");
-          anchor.href = url; anchor.download = originalFile.name; anchor.click();
-          setTimeout(() => URL.revokeObjectURL(url), 1000);
-        }} className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-ink">원본 다운로드</button>}
-        {source.kind === "pdf" && (
-          <a
-            href={source.url}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-lg px-2.5 py-1.5 text-xs font-medium text-muted hover:bg-surface-2 hover:text-ink"
-          >
-            새 창으로
-          </a>
-        )}
-        {onClose && (
-          <button
-            onClick={onClose}
-            className="rounded-lg px-2.5 py-1.5 text-sm font-medium text-ink-2 hover:bg-surface-2 lg:hidden"
-            aria-label="원문 닫기"
-            autoFocus
-          >
-            닫기
-          </button>
-        )}
+        {onClose && <button onClick={onClose} className={`${tool} order-1 sm:order-3 lg:hidden`} autoFocus>닫기</button>}
+        <div className="order-2 flex w-full flex-wrap items-center gap-1 sm:w-auto">
+          {(source.kind !== "text" || showPreview) && <div className="flex items-center gap-1" role="group" aria-label="원문 크기">
+            <button onClick={() => setZoom((z) => Math.max(1, +(z - 0.5).toFixed(1)))} disabled={zoom <= 1} className={tool}>작게</button>
+            <button onClick={() => setZoom((z) => Math.min(3, z + 0.5))} disabled={zoom >= 3} className={tool}>크게</button>
+          </div>}
+          {originalFile && <button onClick={() => {
+            const url = URL.createObjectURL(originalFile);
+            const anchor = document.createElement("a");
+            anchor.href = url; anchor.download = originalFile.name; anchor.click();
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+          }} className={tool}>원본 받기</button>}
+          {source.kind === "pdf" && <a href={source.url} target="_blank" rel="noreferrer" className={tool}>새 창으로</a>}
+        </div>
       </div>
 
-      {source.kind === "text" && <div className="flex gap-1 border-b border-line px-3 py-2" role="group" aria-label="공고문 보기 방식">
-        {originalFile && <button aria-pressed={showPreview} onClick={() => chooseView("preview")} className={`rounded-lg px-3 py-2 text-xs font-semibold ${showPreview ? "bg-brand-soft text-brand" : "text-muted hover:bg-surface-2"}`}>서식 미리보기</button>}
-        <button aria-pressed={!showPreview} onClick={() => chooseView("text")} className={`rounded-lg px-3 py-2 text-xs font-semibold ${!showPreview ? "bg-brand-soft text-brand" : "text-muted hover:bg-surface-2"}`}>추출 텍스트</button>
+      {source.kind === "text" && <div className="flex gap-1 border-b border-line px-3 py-2" role="group" aria-label="보기 방식">
+        {originalFile && <button aria-pressed={showPreview} onClick={() => chooseView("preview")} className={`rounded-lg px-3 py-2 text-[15px] font-semibold ${showPreview ? "bg-brand-soft text-brand-ink" : "text-ink-2 hover:bg-surface-2"}`}>문서 모양</button>}
+        <button aria-pressed={!showPreview} onClick={() => chooseView("text")} className={`rounded-lg px-3 py-2 text-[15px] font-semibold ${!showPreview ? "bg-brand-soft text-brand-ink" : "text-ink-2 hover:bg-surface-2"}`}>글자만 보기</button>
       </div>}
 
-      {active && source.kind !== "text" && <EvidenceBanner active={active} photo={source.kind === "images"} />}
+      {active && <EvidenceBanner active={active} />}
 
       <div ref={scrollRef} className="scrollbar-thin relative flex-1 overflow-auto bg-[#e9ecf1] px-3 py-4 sm:px-5">
         {source.kind === "pdf" ? (
-          <PdfPane url={source.url} active={active} onIndex={onIndex} onPages={setPageCount} scrollRef={scrollRef} zoom={zoom} />
+          <PdfPane url={source.url} active={active} onIndex={onIndex} scrollRef={scrollRef} zoom={zoom} />
         ) : source.kind === "text" ? (
           showPreview && originalFile ? <HangulPreview key={originalFile.name} file={originalFile} zoom={zoom} initialPage={previewPosition?.file === originalFile ? previewPosition.page : 0} onPageChange={rememberPage} onTextView={() => chooseView("text")} />
             : <TextPane source={source} active={active} scrollRef={scrollRef} />
@@ -134,42 +100,31 @@ function TextPane({ source, active, scrollRef }: {
   scrollRef: React.RefObject<HTMLDivElement | null>;
 }) {
   const pages = useMemo(() => source.sections.map(s => ({ page: s.page, items: s.text.split("\n") })), [source.sections]);
+  // 강조한 줄로 바로 옮긴다(긴 구역에서 화면 밖에 남지 않게).
   useEffect(() => {
     if (!active) return;
-    const element = scrollRef.current?.querySelector<HTMLElement>(`[data-page="${active.page}"]`);
-    if (element && scrollRef.current) scrollRef.current.scrollTo({ top: element.offsetTop - 12, behavior: "smooth" });
+    const box = scrollRef.current;
+    const section = box?.querySelector<HTMLElement>(`[data-page="${active.page}"]`);
+    const target = section?.querySelector<HTMLElement>("mark.ea-line") ?? section;
+    if (!box || !target) return;
+    const top = target.getBoundingClientRect().top - box.getBoundingClientRect().top + box.scrollTop;
+    box.scrollTo({ top: Math.max(0, top - (target === section ? 12 : box.clientHeight / 3)), behavior: "smooth" });
   }, [active, scrollRef]);
+  if (!pages.length) return <p role="status" className="p-6 text-center text-[15px] text-ink-2">원문을 불러오고 있어요…</p>;
   return <div className="space-y-4">
-    <p className="rounded-xl bg-warn-soft p-3 text-sm text-warn">{source.warning}</p>
     {pages.map(p => <section key={p.page} data-page={p.page} className="rounded-xl bg-white p-4">
-      <h3 className="mb-3 text-xs font-semibold text-muted">원문 추출 {p.page}구역</h3>
-      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{p.items.map((line, i) => <div key={i}>{active?.page === p.page && active.items.includes(i) ? <mark className="ea-line">{line}</mark> : line || "\u00a0"}</div>)}</div>
+      <div className="whitespace-pre-wrap break-words text-[15px] leading-relaxed text-ink">{p.items.map((line, i) => <div key={i}>{active?.page === p.page && active.items.includes(i) ? <mark className="ea-line">{line}</mark> : line || "\u00a0"}</div>)}</div>
     </section>)}
   </div>;
 }
 
-function EvidenceBanner({ active, photo }: { active: ActiveEvidence; photo: boolean }) {
-  const msg = {
-    exact: {
-      tone: photo ? "text-warn" : "text-ok",
-      icon: photo ? "!" : "✓",
-      text: photo
-        ? `원문 확인 필요 · 사진 ${active.page}쪽에서 내용을 확인해 주세요`
-        : `원문 ${active.page}쪽에서 같은 문장을 찾았어요`,
-    },
-    fuzzy: { tone: "text-warn", icon: "≈", text: `${active.page}쪽에서 비슷한 문장을 찾았어요 · 표시된 곳을 직접 확인해 주세요` },
-    none: { tone: "text-bad", icon: "!", text: `원문에서 같은 문장을 찾지 못했어요 · ${active.page}쪽을 직접 확인해 주세요` },
-    unknown: { tone: "text-ink-2", icon: "i", text: `글자 인식이 안 되는 스캔 문서예요 · ${active.page}쪽에서 직접 확인해 주세요` },
-  }[active.status];
+function EvidenceBanner({ active }: { active: ActiveEvidence }) {
   return (
     <div key={active.key} className="border-b border-line bg-surface-2 px-4 py-3">
-      <div className={`flex items-center gap-1.5 text-xs font-semibold ${msg.tone}`}>
-        <span className="inline-flex h-4 w-4 items-center justify-center rounded-full bg-current/10 text-[10px]">{msg.icon}</span>
-        {msg.text}
-      </div>
-      <p className="mt-1.5 line-clamp-3 border-l-[3px] border-mark pl-2.5 text-[13px] leading-relaxed text-ink-2">
-        “{active.quote}”
-      </p>
+      {active.status === "none" && <p className="mb-1.5 text-[15px] font-semibold text-bad">원문에서 이 문장을 못 찾았어요. 이 쪽을 직접 확인해 주세요.</p>}
+      {active.quotes.map((quote, i) => (
+        <p key={i} className="mt-1 line-clamp-3 border-l-[3px] border-mark pl-2.5 text-[15px] leading-relaxed text-ink-2 first:mt-0">{quote}</p>
+      ))}
     </div>
   );
 }
@@ -180,14 +135,12 @@ function PdfPane({
   url,
   active,
   onIndex,
-  onPages,
   scrollRef,
   zoom,
 }: {
   url: string;
   active: ActiveEvidence | null;
   onIndex: (i: TextIndex) => void;
-  onPages: (n: number) => void;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   zoom: number;
 }) {
@@ -234,11 +187,10 @@ function PdfPane({
   const onLoad = useCallback(
     async (pdf: PDFDocumentProxy) => {
       if (pdf.numPages > MAX_DOCUMENT_PAGES) {
-        setError(`PDF는 ${MAX_DOCUMENT_PAGES}쪽까지 표시할 수 있어요. 필요한 부분을 나누어 올려 주세요.`);
+        setError(`${MAX_DOCUMENT_PAGES}쪽이 넘는 PDF는 여기서 보여 드릴 수 없어요. ‘새 창으로’를 눌러 확인해 주세요.`);
         return;
       }
       setNumPages(pdf.numPages);
-      onPages(pdf.numPages);
       try {
         const pages: PageItems[] = [];
         const ratios: Record<number, number> = {};
@@ -253,10 +205,10 @@ function PdfPane({
         onIndex(buildIndex(pages, "pdf"));
       } catch {
         onIndex(buildIndex([], "pdf"));
-        setError("이 브라우저에서 원문을 표시하지 못했어요. 위의 ‘새 창으로’를 눌러 PDF를 확인해 주세요.");
+        setError("원문을 표시하지 못했어요. ‘새 창으로’를 눌러 확인해 주세요.");
       }
     },
-    [onIndex, onPages],
+    [onIndex],
   );
 
   const scrollToPage = useCallback(
@@ -313,20 +265,20 @@ function PdfPane({
     [active, jumpKey],
   );
 
-  if (error) return <p className="p-6 text-center text-sm text-bad">{error}</p>;
+  if (error) return <p role="alert" className="p-6 text-center text-[15px] text-bad">{error}</p>;
 
   return (
     <Document
       file={url}
       onLoadSuccess={onLoad}
-      onLoadError={() => setError("PDF를 열지 못했어요. 암호가 걸려 있거나 손상된 파일일 수 있어요.")}
-      loading={<PagePlaceholder width={width} label="원문 불러오는 중" />}
+      onLoadError={() => setError("PDF를 열지 못했어요. 암호가 걸린 파일이면 암호를 풀고 다시 올려 주세요.")}
+      loading={<PagePlaceholder width={width} label="원문을 불러오고 있어요…" />}
       className={`flex flex-col gap-4 ${zoom > 1 ? "items-start" : "items-center"}`}
     >
       {width > 0 &&
         Array.from({ length: numPages }, (_, i) => i + 1).map((n) => (
           <div key={n} data-page={n} className="relative">
-            <div className="pointer-events-none absolute -left-1 -top-2.5 z-10 rounded-md bg-ink/75 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+            <div className="pointer-events-none absolute -left-1 -top-3 z-10 rounded-md bg-ink/80 px-2 py-0.5 text-[14px] font-semibold text-white">
               {n}쪽
             </div>
             {visiblePages.has(n) || active?.page === n ? <Page
@@ -352,7 +304,7 @@ function PagePlaceholder({ width, label, ratio = 1.414, animate = true }: { widt
   return (
     <div
       style={{ width: width || 320, height: (width || 320) * ratio }}
-      className={`flex items-center justify-center rounded-sm bg-white/70 text-xs text-muted ${animate ? "animate-pulse" : ""}`}
+      className={`flex items-center justify-center rounded-sm bg-white/70 text-[15px] text-ink-2 ${animate ? "animate-pulse" : ""}`}
     >
       {label}
     </div>
@@ -410,7 +362,7 @@ function ImagePane({
             className="relative max-w-none shrink-0"
             style={{ width: `min(${900 * zoom}px, ${100 * zoom}%)` }}
           >
-            <div className="absolute -left-1 -top-2.5 z-10 rounded-md bg-ink/75 px-1.5 py-0.5 text-[10px] font-semibold text-white">
+            <div className="absolute -left-1 -top-3 z-10 rounded-md bg-ink/80 px-2 py-0.5 text-[14px] font-semibold text-white">
               {page}쪽
             </div>
             {/* eslint-disable-next-line @next/next/no-img-element -- 사용자가 올린 로컬 이미지(blob URL) */}
@@ -422,9 +374,9 @@ function ImagePane({
               }`}
             />
             {hasText && (
-              <details open={isActive && !!active?.items.length} className="mt-2 rounded-lg bg-white/80 px-3 py-2 text-[13px]">
-                <summary className="cursor-pointer select-none text-xs font-medium text-muted">AI가 읽은 글자 보기</summary>
-                <div className="mt-2 space-y-0.5 leading-relaxed text-ink-2">
+              <details open={isActive && !!active?.items.length} className="mt-2 rounded-lg bg-white px-3 py-2 text-[15px]">
+                <summary className="cursor-pointer select-none font-medium text-ink-2">글자로 보기</summary>
+                <div className="mt-2 space-y-0.5 leading-relaxed text-ink">
                   {lines[i].map((l, li) => (
                     <div key={li}>
                       {isActive && active?.items.includes(li) ? <mark className="ea-line">{l}</mark> : l || " "}
@@ -437,15 +389,5 @@ function ImagePane({
         );
       })}
     </div>
-  );
-}
-
-function DocIcon() {
-  return (
-    <svg width="28" height="28" viewBox="0 0 28 28" fill="none" aria-hidden>
-      <rect width="28" height="28" rx="8" fill="var(--brand-soft)" />
-      <path d="M9 7.5h6.5L19 11v9.5H9z" stroke="var(--brand)" strokeWidth="1.6" strokeLinejoin="round" />
-      <path d="M11.5 14h5M11.5 17h3.5" stroke="var(--brand)" strokeWidth="1.6" strokeLinecap="round" />
-    </svg>
   );
 }

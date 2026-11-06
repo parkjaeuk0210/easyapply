@@ -55,11 +55,11 @@ test('feedback keeps a definite 120% income failure separate from an unknown con
   }));
   const text = textOf(html);
   assert.match(text, /기준 중위소득 100% 이하/);
-  assert.match(text, /내 입력 · 기준 중위소득 비율\s*120\s*%/);
-  assert.match(text, /미충족 1/);
-  assert.match(text, /확인 필요 1/);
+  assert.match(text, /내 답변: 기준 중위소득 비율\s*120\s*%/);
+  assert.equal(text.match(/미충족/g)?.length, 1);
+  assert.equal(text.match(/확인 필요/g)?.length, 1);
   assert.match(text, /우대 대상 아님/);
-  assert.equal(text.match(/필수 자격을 충족하지 못했어요/g)?.length, 1);
+  assert.match(text, /최종 자격은 기관 심사로 정해져요/);
   assert(text.indexOf('기준 중위소득 100% 이하') < text.indexOf('지역 5년 이상 거주자 우대'));
   assert(text.indexOf('무주택자') < text.indexOf('지역 5년 이상 거주자 우대'));
   assert.match(text, /중위소득 120% 청년 주거 지원/);
@@ -71,10 +71,9 @@ test('the post-analysis form retains the supplied memo and offers a non-submit o
   const memo = '춘천 거주, 중위소득 120% — 다음 달 이사 예정';
   const html = renderToStaticMarkup(createElement(ProfileCheck, {
     a: analysis(), answers: {}, match: null, extra: memo, docKey: 'memo-fixture',
-    onAnswers: noop, onExtra: noop, onMatch: noop, onOverview: noop, canRunAI: true,
+    onAnswers: noop, onExtra: noop, onMatch: noop, canRunAI: true,
   }));
   assert.match(html, new RegExp(`<textarea[^>]*id="extra"[^>]*>${memo}</textarea>`));
-  assert.match(html, /<button[^>]*type="button"[^>]*>공고문 요약 먼저 보기<\/button>/);
   assert.match(html, /<label[^>]*for="extra"/);
 });
 
@@ -86,7 +85,5 @@ test('contact details and evidence remain available without application steps, a
   assert.match(overview, /href="mailto:youth@example.go.kr"/);
   assert.match(overview, /title="“청년정책과 033-250-1234”"/);
   const glossary = textOf(renderToStaticMarkup(createElement(GlossaryPanel, { a })));
-  assert.match(glossary, /공고문에 실제 등장/);
-  assert.match(glossary, /행정·법률·소득 기준 용어/);
-  assert.match(glossary, /용어를 찾지 못했어요/);
+  assert.match(glossary, /따로 풀어 설명할 용어가 없어요/);
 });
