@@ -399,95 +399,131 @@ function UploadScreen({
   const [unlocking, setUnlocking] = useState(false);
 
   return (
-    <main className="mx-auto max-w-[640px] px-4 pb-16 pt-10 sm:px-6 lg:pt-16">
-      <h1 className="text-[30px] font-extrabold leading-[1.3] tracking-[-0.02em] text-ink sm:text-[38px]">
-        어려운 공고문,
-        <br />
-        쉬운 말로 정리해 드려요
-      </h1>
-      <p className="mt-3 text-[17px] leading-relaxed text-ink-2">내가 신청할 수 있는지도 확인할 수 있어요.</p>
+    <main className="mx-auto max-w-[640px] px-4 pb-16 pt-10 sm:px-6 lg:max-w-[1180px] lg:pt-16">
+      <div className="grid items-center gap-10 lg:grid-cols-[1.05fr_0.95fr]">
+        <div className="min-w-0">
+          <p className="text-[14px] font-semibold text-brand">청년 지원사업 · 장학금 · 정부 지원제도</p>
+          <h1 className="mt-3 text-[26px] font-extrabold leading-[1.3] tracking-[-0.02em] text-ink sm:text-[38px]">
+            어려운 공고문,
+            <br />
+            <span className="text-brand">내 상황에 맞게</span> 정리해 드려요
+          </h1>
+          <p className="mt-4 max-w-[520px] text-[16px] leading-relaxed text-ink-2">
+            공고문을 올리면 AI가 신청 자격·제출 서류·마감일·주의 사항을 쉬운 말로 정리하고, 내 조건과 비교해 준비 체크리스트까지 만들어 줘요. 모든 설명에는 근거가 된 공고문 원문을 함께 보여드려요.
+          </p>
 
-      {status?.access_required && <form className="mt-6 rounded-xl border border-line bg-surface p-4" onSubmit={async (e) => {
-        e.preventDefault(); setUnlocking(true); setUnlockError(null);
-        try { await onUnlock(code); setCode(""); } catch (err) { setUnlockError(errorMessage(err)); } finally { setUnlocking(false); }
-      }}>
-        <label htmlFor="access-code" className="block text-[16px] font-semibold text-ink">이용 코드</label>
-        <div className="mt-2 flex gap-2">
-          <input id="access-code" type="password" autoComplete="current-password" required maxLength={256} value={code} onChange={e => setCode(e.target.value)} className="min-w-0 flex-1 rounded-lg border border-line px-3 py-2 text-[16px]" />
-          <button disabled={unlocking} className="rounded-lg bg-brand px-4 py-2 text-[16px] font-semibold text-white">{unlocking ? "확인 중…" : "확인"}</button>
+          {status?.access_required && <form className="mt-6 rounded-xl border border-line bg-surface p-4" onSubmit={async (e) => {
+            e.preventDefault(); setUnlocking(true); setUnlockError(null);
+            try { await onUnlock(code); setCode(""); } catch (err) { setUnlockError(errorMessage(err)); } finally { setUnlocking(false); }
+          }}>
+            <label htmlFor="access-code" className="block text-[16px] font-semibold text-ink">이용 코드</label>
+            <div className="mt-2 flex gap-2">
+              <input id="access-code" type="password" autoComplete="current-password" required maxLength={256} value={code} onChange={e => setCode(e.target.value)} className="min-w-0 flex-1 rounded-lg border border-line px-3 py-2 text-[16px]" />
+              <button disabled={unlocking} className="rounded-lg bg-brand px-4 py-2 text-[16px] font-semibold text-white">{unlocking ? "확인 중…" : "확인"}</button>
+            </div>
+            {unlockError && <p role="alert" className="mt-2 text-[15px] text-bad">{unlockError}</p>}
+          </form>}
+
+          <details className="mt-6 rounded-xl border border-line bg-surface px-4 py-3">
+            <summary className="cursor-pointer text-[16px] font-semibold text-ink-2">내 상황 미리 적기 <span className="font-normal text-muted">(선택)</span></summary>
+            <label htmlFor="initial-profile" className="mt-3 block text-[15px] text-ink-2">나이, 사는 곳처럼 알고 있는 조건</label>
+            <textarea id="initial-profile" value={extra} onChange={e => onExtra(e.target.value)} rows={3} maxLength={2000} placeholder="예: 춘천 거주, 만 25세" className="mt-2 w-full resize-y rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-[16px] outline-none focus:border-brand" />
+          </details>
+
+          <div
+            onDragOver={(e) => {
+              e.preventDefault();
+              setDrag(true);
+            }}
+            onDragLeave={() => setDrag(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDrag(false);
+              onFiles(e.dataTransfer.files);
+            }}
+            role="button"
+            tabIndex={0}
+            aria-label="공고문 파일이나 사진 선택"
+            onClick={() => input.current?.click()}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                input.current?.click();
+              }
+            }}
+            className={`mt-4 cursor-pointer rounded-2xl border-2 border-dashed px-6 py-9 text-center transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
+              drag ? "border-brand bg-brand-soft" : "border-line-strong bg-surface"
+            }`}
+          >
+            <UploadIcon />
+            <p className="mt-3 text-[17px] font-semibold text-ink">공고문 파일이나 사진을 올려 주세요</p>
+            <p className="mt-1 text-[15px] text-ink-2">PDF, 한글 파일, 사진</p>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                input.current?.click();
+              }}
+              className="mt-4 rounded-xl bg-brand px-6 py-3 text-[16px] font-bold text-white transition hover:bg-brand-ink"
+            >
+              파일 선택
+            </button>
+            <input
+              ref={input}
+              type="file"
+              accept={FILE_ACCEPT}
+              multiple
+              className="hidden"
+              onClick={(e) => e.stopPropagation()}
+              onChange={(e) => {
+                if (e.target.files) onFiles(e.target.files);
+                e.target.value = "";
+              }}
+            />
+          </div>
+          <p className="mt-2 text-[14px] leading-relaxed text-ink-2">올린 파일과 적은 내용은 분석에만 쓰고 따로 저장하지 않아요.</p>
+
+          {error && <div role="alert" className="mt-4 rounded-xl bg-bad-soft px-4 py-3 text-[16px] leading-relaxed text-bad">{error}</div>}
+          {onRetryUpload && (
+            <button type="button" onClick={onRetryUpload} className="mt-3 rounded-xl bg-brand px-4 py-2.5 text-[16px] font-semibold text-white">
+              같은 파일로 다시 시도
+            </button>
+          )}
+          {status?.provider === "none" && !error && (
+            <p className="mt-4 rounded-xl bg-warn-soft px-4 py-3 text-[16px] leading-relaxed text-warn">지금은 분석을 할 수 없어요. 잠시 후 다시 와 주세요.</p>
+          )}
         </div>
-        {unlockError && <p role="alert" className="mt-2 text-[15px] text-bad">{unlockError}</p>}
-      </form>}
-
-      <details className="mt-6 rounded-xl border border-line bg-surface px-4 py-3">
-        <summary className="cursor-pointer text-[16px] font-semibold text-ink-2">내 상황 미리 적기 <span className="font-normal text-muted">(선택)</span></summary>
-        <label htmlFor="initial-profile" className="mt-3 block text-[15px] text-ink-2">나이, 사는 곳처럼 알고 있는 조건</label>
-        <textarea id="initial-profile" value={extra} onChange={e => onExtra(e.target.value)} rows={3} maxLength={2000} placeholder="예: 춘천 거주, 만 25세" className="mt-2 w-full resize-y rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-[16px] outline-none focus:border-brand" />
-      </details>
-
-      <div
-        onDragOver={(e) => {
-          e.preventDefault();
-          setDrag(true);
-        }}
-        onDragLeave={() => setDrag(false)}
-        onDrop={(e) => {
-          e.preventDefault();
-          setDrag(false);
-          onFiles(e.dataTransfer.files);
-        }}
-        role="button"
-        tabIndex={0}
-        aria-label="공고문 파일이나 사진 선택"
-        onClick={() => input.current?.click()}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") {
-            e.preventDefault();
-            input.current?.click();
-          }
-        }}
-        className={`mt-4 cursor-pointer rounded-2xl border-2 border-dashed px-6 py-9 text-center transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
-          drag ? "border-brand bg-brand-soft" : "border-line-strong bg-surface"
-        }`}
-      >
-        <UploadIcon />
-        <p className="mt-3 text-[17px] font-semibold text-ink">공고문 파일이나 사진을 올려 주세요</p>
-        <p className="mt-1 text-[15px] text-ink-2">PDF, 한글 파일, 사진</p>
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            input.current?.click();
-          }}
-          className="mt-4 rounded-xl bg-brand px-6 py-3 text-[16px] font-bold text-white transition hover:bg-brand-ink"
-        >
-          파일 선택
-        </button>
-        <input
-          ref={input}
-          type="file"
-          accept={FILE_ACCEPT}
-          multiple
-          className="hidden"
-          onClick={(e) => e.stopPropagation()}
-          onChange={(e) => {
-            if (e.target.files) onFiles(e.target.files);
-            e.target.value = "";
-          }}
-        />
+        <HeroMock />
       </div>
-      <p className="mt-2 text-[14px] leading-relaxed text-ink-2">올린 파일과 적은 내용은 분석에만 쓰고 따로 저장하지 않아요.</p>
-
-      {error && <div role="alert" className="mt-4 rounded-xl bg-bad-soft px-4 py-3 text-[16px] leading-relaxed text-bad">{error}</div>}
-      {onRetryUpload && (
-        <button type="button" onClick={onRetryUpload} className="mt-3 rounded-xl bg-brand px-4 py-2.5 text-[16px] font-semibold text-white">
-          같은 파일로 다시 시도
-        </button>
-      )}
-      {status?.provider === "none" && !error && (
-        <p className="mt-4 rounded-xl bg-warn-soft px-4 py-3 text-[16px] leading-relaxed text-warn">지금은 분석을 할 수 없어요. 잠시 후 다시 와 주세요.</p>
-      )}
     </main>
+  );
+}
+
+function HeroMock() {
+  return (
+    <div className="hidden min-w-0 rounded-2xl border border-line bg-surface p-5 shadow-[0_20px_50px_rgba(16,24,40,.10)] lg:block" aria-hidden>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="rounded-full bg-brand-soft px-2.5 py-1 text-[14px] font-semibold text-brand-ink">주거·월세 지원</span>
+        <span className="rounded-full bg-bad-soft px-2.5 py-1 text-[14px] font-semibold text-bad">신청 마감 D-12</span>
+      </div>
+      <div className="mt-3 text-[16px] font-bold leading-snug text-ink">청년 월세 지원사업 참여자 모집</div>
+      <div className="mt-1 text-[14px] text-ink-2">월세를 월 최대 20만원, 최대 12개월 지원해 줘요.</div>
+      <div className="mt-4 space-y-2">
+        {[
+          ["ok", "충족", "만 19~34세 청년이어야 해요"],
+          ["ok", "충족", "주민등록상 주소가 가람시여야 해요"],
+          ["warn", "확인 필요", "원가구 소득이 중위소득 100% 이하"],
+        ].map(([tone, status, text]) => (
+          <div key={text} className="flex items-center gap-2 rounded-xl bg-surface-2 px-3 py-2">
+            <span className={`shrink-0 rounded-full px-2.5 py-1 text-[14px] font-semibold ${tone === "ok" ? "bg-ok-soft text-ok" : "bg-warn-soft text-warn"}`}>{status}</span>
+            <span className="text-[14px] text-ink">{text}</span>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 inline-flex rounded-md border border-brand bg-brand-soft px-2 py-1 text-[14px] font-medium text-brand-ink">
+        원문 1쪽
+      </div>
+    </div>
   );
 }
 
