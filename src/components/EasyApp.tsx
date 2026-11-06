@@ -436,7 +436,17 @@ function UploadScreen({
           setDrag(false);
           onFiles(e.dataTransfer.files);
         }}
-        className={`mt-4 rounded-2xl border-2 border-dashed px-6 py-9 text-center transition ${
+        role="button"
+        tabIndex={0}
+        aria-label="공고문 파일이나 사진 선택"
+        onClick={() => input.current?.click()}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" || e.key === " ") {
+            e.preventDefault();
+            input.current?.click();
+          }
+        }}
+        className={`mt-4 cursor-pointer rounded-2xl border-2 border-dashed px-6 py-9 text-center transition focus:outline-none focus-visible:ring-2 focus-visible:ring-brand ${
           drag ? "border-brand bg-brand-soft" : "border-line-strong bg-surface"
         }`}
       >
@@ -445,7 +455,10 @@ function UploadScreen({
         <p className="mt-1 text-[15px] text-ink-2">PDF, 한글 파일, 사진</p>
         <button
           type="button"
-          onClick={() => input.current?.click()}
+          onClick={(e) => {
+            e.stopPropagation();
+            input.current?.click();
+          }}
           className="mt-4 rounded-xl bg-brand px-6 py-3 text-[16px] font-bold text-white transition hover:bg-brand-ink"
         >
           파일 선택
@@ -456,6 +469,7 @@ function UploadScreen({
           accept={FILE_ACCEPT}
           multiple
           className="hidden"
+          onClick={(e) => e.stopPropagation()}
           onChange={(e) => {
             if (e.target.files) onFiles(e.target.files);
             e.target.value = "";

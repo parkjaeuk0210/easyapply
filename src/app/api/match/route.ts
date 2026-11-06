@@ -2,10 +2,10 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { AnalysisSchema, MatchSchema } from "@/lib/schema";
 import { MATCH_SYSTEM, matchUserText } from "@/lib/prompts";
-import { MATCH_OUTPUT_TOKENS } from "@/lib/llm-limits";
+import { REQUEST_BUDGET_MS, matchOutputTokens } from "@/lib/llm-limits";
 import { detectProvider, runStructured, todayKST } from "@/lib/llm";
 import { AppError, errorResponse, json } from "@/lib/server/errors";
-import { acquireAI, guard, limitAttempts } from "@/lib/server/guard";
+import { acquireAI, chargeAI, guard, limitAttempts } from "@/lib/server/guard";
 import { isLoopbackRequest, readJson } from "@/lib/server/http";
 import { verifyAnalysis } from "@/lib/server/tokens";
 import { validateAnalysis, validateAnswers, finalizeMatch } from "@/lib/server/validation";
@@ -17,7 +17,7 @@ const Body = z.strictObject({
   extra: z.string().max(2000).default(""),
 });
 export async function POST(req: Request) {
-  const requestId = randomUUID();
+  const requestId = randomUUID(), started = Date.now();
   let release: (() => Promise<void>) | undefined;
   try {
     const sid = guard(req);
@@ -37,8 +37,11 @@ export async function POST(req: Request) {
     if (provider === "cli" && !isLoopbackRequest(req)) throw new AppError("local_only", "로컬 분석은 localhost에서만 사용할 수 있어요.", 403);
     if (provider === "none") throw new AppError("no_provider", "AI 연결이 준비되지 않았어요.", 503);
     release = await acquireAI(req, sid, "match");
+    await chargeAI(req, sid, "match");
     const { data, provider: used } = await runStructured({ system: MATCH_SYSTEM,
-      text: matchUserText(analysis, answers, b.extra, todayKST()), schema: MatchSchema, signal: req.signal, maxTokens: MATCH_OUTPUT_TOKENS });
+      text: matchUserText(analysis, answers, b.extra, todayKST()), schema: MatchSchema, signal: req.signal,
+      maxTokens: matchOutputTokens(), requestId, deadline: started + REQUEST_BUDGET_MS,
+      validate: (result) => { finalizeMatch(analysis, answers, result, unchecked); } });
     return json({ match: finalizeMatch(analysis, answers, data, unchecked), provider: used, request_id: requestId }, 200, { "X-Request-Id": requestId });
   } catch (e) { return errorResponse(e, requestId); }
   finally { await release?.(); }

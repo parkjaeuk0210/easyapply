@@ -7,11 +7,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { acquireAI, checkAIAvailability, issueSession, limitAttempts, reserveUploadBudget } from '../src/lib/server/guard';
+import { acquireAI, chargeAI, checkAIAvailability, issueSession, limitAttempts, reserveUploadBudget } from '../src/lib/server/guard';
 import { privateKey } from '../src/lib/server/tokens';
 import { MAX_UPLOAD_BYTES } from '../src/lib/limits';
 
 const exec=promisify(execFile);
+async function admit(request:Request,sessionId:string,kind:'analyze'|'match'){
+  const release=await acquireAI(request,sessionId,kind);
+  await chargeAI(request,sessionId,kind);
+  return release;
+}
 test('Redis atomically enforces concurrency, global quota, and outage fails closed',async(t)=>{
   try { await exec('redis-server',['--version']); } catch { t.skip('redis-server unavailable'); return; }
   const dir=await mkdtemp(path.join(os.tmpdir(),'easyapply-redis-test-')),socket=path.join(dir,'redis.sock');
@@ -38,10 +43,12 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
     const attempts=await Promise.allSettled([acquireAI(req,'a','analyze'),acquireAI(req,'a','analyze')]);
     assert.equal(attempts.filter(r=>r.status==='fulfilled').length,1);
     const winner=attempts.find(r=>r.status==='fulfilled') as PromiseFulfilledResult<()=>Promise<void>>;
-    const releaseB=await acquireAI(req,'b','analyze');
-    await assert.rejects(acquireAI(req,'c','analyze'));
+    await chargeAI(req,'a','analyze');
+    const releaseB=await admit(req,'b','analyze');
+    // A full house reports when the earliest lease ends, not a fixed 5 seconds.
+    await assert.rejects(acquireAI(req,'c','analyze'),(e:{retryAfter:number})=>e.retryAfter>=300);
     await winner.value();await releaseB();
-    const releaseC=await acquireAI(req,'c','match');await releaseC();
+    const releaseC=await admit(req,'c','match');await releaseC();
     await assert.rejects(acquireAI(req,'d','match'));
     await limitAttempts(req,'test',1);await assert.rejects(limitAttempts(req,'test',1));
 
@@ -56,6 +63,16 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
       assert.equal(await value('easyapply:v1:upload:bytes:global'),10*MAX_UPLOAD_BYTES);
       assert.equal(await value('easyapply:v1:upload:files:global'),10);
       assert.equal(await value('easyapply:v1:daily'),3);
+      // Metadata-only grants hold the shared budget for one ticket lifetime, not a day.
+      const ttl=async(key:string)=>Number((await exec('redis-cli',['-s',socket,'PTTL',key])).stdout.trim());
+      assert(await ttl('easyapply:v1:upload:bytes:global')<=30*60_000);
+      assert(await ttl('easyapply:v1:upload:files:global')<=30*60_000);
+      assert(await ttl(`easyapply:v1:upload:bytes:ip:${privateKey('203.0.113.1')}`)>86_000_000);
+    });
+    await t.test('IPv6 addresses in one /64 share a bucket',async()=>{
+      await limitAttempts(uploadRequest('2001:db8:1:2::1'),'v6',1);
+      await assert.rejects(limitAttempts(uploadRequest('2001:0db8:0001:0002:ffff:0:0:9'),'v6',1));
+      await limitAttempts(uploadRequest('2001:db8:1:3::1'),'v6',1);
     });
     await t.test('upload session budget survives IP changes without blocking another session',async()=>{
       await exec('redis-cli',['-s',socket,'FLUSHDB']);
@@ -72,8 +89,9 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
       assert(grants.filter(r=>r.status==='rejected').every(r=>uploadLimited(r.reason)));
       assert.equal(await value('easyapply:v1:upload:bytes:global'),100*MAX_UPLOAD_BYTES);
       assert.equal(await value('easyapply:v1:upload:files:global'),100);
+      // The shared budget resets with the 30-minute ticket lifetime.
       const ttl=Number((await exec('redis-cli',['-s',socket,'PTTL','easyapply:v1:upload:bytes:global'])).stdout.trim());
-      assert(ttl>86_300_000 && ttl<=86_400_000);
+      assert(ttl>29*60_000 && ttl<=30*60_000);
     });
     await t.test('global upload object cap stops tiny-file floods without partially charging rejected grants',async()=>{
       await exec('redis-cli',['-s',socket,'FLUSHDB']);
@@ -95,7 +113,7 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
       await resetAI();
       const ip='203.0.113.210', request=uploadRequest(ip);
       for(let i=0;i<20;i++) {
-        const release=await acquireAI(request,`rotated-${i}`,i<8?'analyze':'match'); await release();
+        const release=await admit(request,`rotated-${i}`,i<8?'analyze':'match'); await release();
       }
       // Simulate the 10-minute buckets expiring; the day bucket must survive.
       await exec('redis-cli',['-s',socket,'DEL',`easyapply:v1:ip:${privateKey(ip)}:analyze`,`easyapply:v1:ip:${privateKey(ip)}:match`]);
@@ -104,12 +122,12 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
       assert.equal(await value('easyapply:v1:daily'),20);
       const ttl=Number((await exec('redis-cli',['-s',socket,'PTTL',`easyapply:v1:daily:ip:${privateKey(ip)}`])).stdout.trim());
       assert(ttl>86_300_000 && ttl<=86_400_000);
-      const release=await acquireAI(uploadRequest('203.0.113.211'),'other-judge','analyze');await release();
+      const release=await admit(uploadRequest('203.0.113.211'),'other-judge','analyze');await release();
       assert.equal(await value('easyapply:v1:daily'),21);
     });
     await t.test('a session retains its combined daily budget across IP changes',async()=>{
       await resetAI();
-      for(let i=0;i<20;i++) {const release=await acquireAI(uploadRequest(`198.51.100.${i}`),'roaming-session','match');await release();}
+      for(let i=0;i<20;i++) {const release=await admit(uploadRequest(`198.51.100.${i}`),'roaming-session','match');await release();}
       await assert.rejects(acquireAI(uploadRequest('198.51.100.100'),'roaming-session','analyze'),dailyLimited);
       assert.equal(await value('easyapply:v1:daily'),20);
     });
@@ -118,11 +136,20 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
       const request=uploadRequest('192.0.2.210');
       await exec('redis-cli',['-s',socket,'SET',`easyapply:v1:daily:ip:${privateKey('192.0.2.210')}`,'19','PX','86400000']);
       await exec('redis-cli',['-s',socket,'SET','easyapply:v1:daily','19','PX','86400000']);
-      const attempts=await Promise.allSettled(Array.from({length:12},(_,i)=>acquireAI(request,`race-${i}`,'match')));
-      assert.equal(attempts.filter(r=>r.status==='fulfilled').length,1);
-      assert(attempts.filter(r=>r.status==='rejected').every(r=>dailyLimited(r.reason)));
-      for(const r of attempts)if(r.status==='fulfilled')await r.value();
+      const releases=await Promise.all(Array.from({length:12},(_,i)=>acquireAI(request,`race-${i}`,'match')));
+      const charges=await Promise.allSettled(Array.from({length:12},(_,i)=>chargeAI(request,`race-${i}`,'match')));
+      assert.equal(charges.filter(r=>r.status==='fulfilled').length,1);
+      assert(charges.filter(r=>r.status==='rejected').every(r=>dailyLimited(r.reason)));
+      await Promise.all(releases.map(release=>release()));
       assert.equal(await value('easyapply:v1:daily'),20);
+    });
+    await t.test('leases for work that never reaches the provider leave the daily quota untouched',async()=>{
+      await resetAI();
+      const request=uploadRequest('192.0.2.215');
+      for(let i=0;i<100;i++){const release=await acquireAI(uploadRequest(`192.0.2.${i}`),`unreadable-${i}`,'analyze');await release();}
+      assert.equal(await value('easyapply:v1:daily'),0);
+      const release=await admit(request,'readable','analyze');await release();
+      assert.equal(await value('easyapply:v1:daily'),1);
     });
     await t.test('upload preflight checks capacity without spending quota or holding a concurrency slot',async()=>{
       await resetAI();
@@ -130,17 +157,19 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
       for(let i=0;i<5;i++)await checkAIAvailability(request,'preflight','analyze');
       assert.equal(await value('easyapply:v1:daily'),0);
       assert.equal(Number((await exec('redis-cli',['-s',socket,'ZCARD','easyapply:v1:active'])).stdout.trim()),0);
-      const release=await acquireAI(request,'preflight','analyze');
+      const release=await admit(request,'preflight','analyze');
       await assert.rejects(checkAIAvailability(request,'preflight','analyze'),(e:{code:string})=>e.code==='in_progress');
       await release();
       assert.equal(await value('easyapply:v1:daily'),1);
     });
-    await t.test('new session issuance is bounded per IP for 24 hours and cannot consume AI quota',async()=>{
+    await t.test('new session issuance allows a shared venue Wi-Fi, is bounded per IP for 24 hours and cannot consume AI quota',async()=>{
       await resetAI();
       const request=uploadRequest('192.0.2.230');
       const issued=await Promise.allSettled(Array.from({length:35},()=>issueSession(request)));
-      assert.equal(issued.filter(r=>r.status==='fulfilled').length,30);
-      assert(issued.filter(r=>r.status==='rejected').every(r=>r.reason.status===429&&r.reason.retryAfter>86000));
+      assert.equal(issued.filter(r=>r.status==='fulfilled').length,35);
+      await exec('redis-cli',['-s',socket,'SET',`easyapply:v1:attempt:session-issuance:${privateKey('192.0.2.230')}`,'199','PX','86400000']);
+      await issueSession(request);
+      await assert.rejects(issueSession(request),(e:{status:number;code:string;retryAfter:number})=>e.status===429&&e.code==='rate_limit'&&e.retryAfter>86000);
       assert.equal(await value('easyapply:v1:daily'),0);
       await issueSession(uploadRequest('192.0.2.231'));
     });
@@ -163,7 +192,7 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
       const releases=await Promise.all(Array.from({length:12},(_,i)=>acquireAI(request,`judge-${i}`,'analyze')));
       await assert.rejects(acquireAI(request,'judge-0','match'),(e:{code:string})=>e.code==='in_progress');
       await Promise.all(releases.map(release=>release()));
-      for(let i=0;i<110;i++){const release=await acquireAI(request,'review-session',i%2?'analyze':'match');await release();}
+      for(let i=0;i<110;i++){const release=await admit(request,'review-session',i%2?'analyze':'match');await release();}
       assert.equal(await value('easyapply:v1:daily'),100);
       assert.equal(await value('easyapply:v1:upload:bytes:global'),0);
       assert.equal(Number((await exec('redis-cli',['-s',socket,'ZCARD','easyapply:v1:active'])).stdout.trim()),0);

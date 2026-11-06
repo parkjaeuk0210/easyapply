@@ -3,7 +3,7 @@
 import { createContext, useContext } from "react";
 import type { Analysis, Evidence } from "@/lib/schema";
 import type { Located } from "@/lib/textmatch";
-import { daysUntil, mainDeadline, shortDate, todayLocalISO } from "@/lib/dates";
+import { deadlineDays, mainDeadline, shortDate, todayLocalISO } from "@/lib/dates";
 
 // ── 날짜 ────────────────────────────────────────────────────────
 
@@ -18,7 +18,7 @@ export function koDate(iso: string | null | undefined, weekday = true) {
 /** 접수 마감을 사람이 읽는 한 줄로. 마감일을 못 찾으면 null. */
 export function deadlineInfo(a: Analysis) {
   const deadline = mainDeadline(a);
-  const days = daysUntil(deadline?.date_iso);
+  const days = deadlineDays(deadline);
   if (!deadline || days === null) return null;
   if (days < 0) return { expired: true, days, text: `이 공고는 ${koDate(deadline.date_iso, false)}에 접수가 끝났어요.`, left: null };
   return {

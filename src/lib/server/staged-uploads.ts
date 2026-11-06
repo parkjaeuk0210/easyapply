@@ -31,12 +31,13 @@ export function uploadManifest(ticket: string, sessionId: string): Manifest {
   return files;
 }
 
-export async function prepareUploads(value: unknown, sessionId: string, req: Request) {
+/** `maxBytes` is the active provider's upload limit (see limits.ts). */
+export async function prepareUploads(value: unknown, sessionId: string, req: Request, maxBytes = MAX_UPLOAD_BYTES) {
   if (!largeUploadsAvailable()) throw new AppError("upload_unavailable", "큰 파일 업로드를 준비 중이에요. 잠시 후 다시 시도해 주세요.", 503);
   const parsed = z.object({ files: z.array(FileSchema).min(1).max(10) }).strict().safeParse(value);
   if (!parsed.success) throw new AppError("invalid_input", `파일 정보나 용량이 올바르지 않아요. 최대 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB까지 올려 주세요.`, 400);
   const files = parsed.data.files.map(f => ({ ...f, mediaType: fileMediaType(f.name, f.mediaType) }));
-  validateUploadSpecs(files);
+  validateUploadSpecs(files, maxBytes);
   await checkAIAvailability(req, sessionId, "analyze");
   await reserveUploadBudget(req, sessionId, files.reduce((sum, file) => sum + file.size, 0), files.length);
   const manifest = files.map(f => ({ ...f, pathname: `${PREFIX}${privateKey(sessionId)}/${Date.now()}-${randomUUID()}` }));

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { connection } from "next/server";
 import { MODEL, OPENAI_MODEL, detectProvider } from "@/lib/llm";
-import { HOSTED, MAX_UPLOAD_BYTES, DIRECT_UPLOAD_BYTES } from "@/lib/limits";
+import { directUploadBytes, maxUploadBytes } from "@/lib/limits";
 import { largeUploadsAvailable } from "@/lib/server/staged-uploads";
-import { configurationIssues, openAIConfig, usageLimitsEnabled } from "@/lib/server/config";
+import { configurationIssues, isHosted, openAIConfig, usageLimitsEnabled } from "@/lib/server/config";
 import { errorResponse, json } from "@/lib/server/errors";
 import { assertOrigin, isLoopbackRequest } from "@/lib/server/http";
 import { session } from "@/lib/server/tokens";
@@ -19,15 +19,17 @@ export async function GET(req: Request) {
     const accessRequired = !!process.env.EASYAPPLY_ACCESS_CODE && !sid;
     const cookie = ready && !sid && !accessRequired ? (await issueSession(req)).cookie : null;
     const openai = ready && configured === "openai" ? openAIConfig() : null;
+    const hosted = isHosted();
+    const directBytes = directUploadBytes(hosted, configured);
     return json({
       provider: ready ? configured : "none", model: configured === "openai" ? OPENAI_MODEL : configured === "api" ? MODEL : configured === "cli" ? "Claude Code" : null,
       reasoning_effort: openai?.reasoning.effort ?? (ready && configured === "api" ? process.env.EASYAPPLY_EFFORT || "medium" : null),
       service_tier: openai?.service_tier ?? null,
       processing_speed: ready && configured === "api" ? process.env.EASYAPPLY_ANTHROPIC_SPEED || "standard" : null,
-      ready, access_required: accessRequired, hosted: HOSTED,
+      ready, access_required: accessRequired, hosted,
       usage_limits_enabled: usageLimitsEnabled(),
-      max_upload_bytes: !HOSTED || largeUploadsAvailable() ? MAX_UPLOAD_BYTES : DIRECT_UPLOAD_BYTES,
-      max_direct_upload_bytes: DIRECT_UPLOAD_BYTES, large_uploads: largeUploadsAvailable(),
+      max_upload_bytes: !hosted || largeUploadsAvailable() ? maxUploadBytes(configured) : directBytes,
+      max_direct_upload_bytes: directBytes, large_uploads: largeUploadsAvailable(),
       status: ready ? "configured" : "setup_required",
       message: ready ? null : "AI 연결을 준비 중이에요. 잠시 후 다시 방문해 주세요.",
       supported_formats: ["pdf", "hwp", "hwpx", "jpg", "png", "webp", "gif"],

@@ -32,6 +32,10 @@ export const AnalysisSchema = z.object({
       time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).nullable(),
       is_deadline: z.boolean(),
       is_application_deadline: z.boolean().prefault(false),
+      // 서버가 채우는 값: 접수 마감 플래그가 없어 일정 이름으로 추정한 마감인지.
+      deadline_inferred: z.boolean().prefault(false).describe("서버 전용 값. 항상 false로 두세요."),
+      // 서버가 채우는 값: date_iso가 date_text와 맞지 않아 비운 경우 true.
+      date_uncertain: z.boolean().prefault(false).describe("서버 전용 값. 항상 false로 두세요."),
       ...withEvidence,
     }),
   ).max(50),
@@ -43,6 +47,8 @@ export const AnalysisSchema = z.object({
       kind: z.enum(["required", "exclusion", "preference"]),
       requirement: text(),
       detail: text().nullable(),
+      // 특정 대상(예: 제약기업 지원자)에게만 붙는 조건이면 그 대상. 모두에게 적용되면 null.
+      applies_to: z.string().max(300).nullable().prefault(null),
       ...withEvidence,
     }),
   ).max(80),

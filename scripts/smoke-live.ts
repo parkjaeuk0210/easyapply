@@ -7,12 +7,13 @@ async function main() {
   const out=process.env.EASYAPPLY_EVIDENCE_DIR || 'artifacts/live';
   await mkdir(out,{recursive:true});
   for(const [name,file,type] of [
-    ['openai-pdf','tests/fixtures/samples/garam-youth-rent-2026.pdf','application/pdf'],
-    ['openai-hwpx','tests/fixtures/notice.hwpx','application/hwp+zip'],
+    ['pdf','tests/fixtures/samples/garam-youth-rent-2026.pdf','application/pdf'],
+    ['hwpx','tests/fixtures/notice.hwpx','application/hwp+zip'],
   ]) {
     const status=await fetch(base+'/api/status');
     const info=await status.json();
-    if(!info.ready || info.provider!=='openai') throw new Error('OpenAI is not configured');
+    // Checks whichever provider the deployment runs; the provider is recorded, not forced.
+    if(!info.ready) throw new Error(`AI is not configured (${info.provider})`);
     const cookie=status.headers.get('set-cookie')?.split(';')[0] || '';
     const form=new FormData();form.append('files',new File([await readFile(file)],file.split('/').pop()!,{type}));
     const started=Date.now();
@@ -22,8 +23,10 @@ async function main() {
     if(!response.ok) throw new Error(`${name}: ${response.status} ${result.error?.code}`);
     const analysis=AnalysisSchema.parse(result.analysis);
     console.log(JSON.stringify({case:name,step:'analysis',provider:result.provider,elapsed_ms:Date.now()-started,evidence:result.verification,title:analysis.title}));
-    if(name==='openai-pdf') {
-      const matchResponse=await fetch(base+'/api/match',{method:'POST',headers:{cookie,'content-type':'application/json'},body:JSON.stringify({analysis,analysis_token:result.analysis_token,answers:{},extra:''}),signal:AbortSignal.timeout(285000)});
+    if(name==='pdf') {
+      // Empty profiles are rejected; a note without answers keeps every criterion unanswered.
+      const body={analysis,analysis_token:result.analysis_token,answers:{},extra:'자동 점검: 조건 답변 없음'};
+      const matchResponse=await fetch(base+'/api/match',{method:'POST',headers:{cookie,'content-type':'application/json'},body:JSON.stringify(body),signal:AbortSignal.timeout(285000)});
       const matched=await matchResponse.json();
       await writeFile(`${out}/${name}-match.json`,JSON.stringify(matched,null,2));
       if(!matchResponse.ok)throw new Error(`Match failed: ${matched.error?.code}`);

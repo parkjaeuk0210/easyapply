@@ -45,6 +45,7 @@ export async function extractHangul(file: InputFile, signal: AbortSignal) {
   }
   // The worker's 100 native-section / 1M-character limits currently produce at most 183 sections.
   if (sections.length > MAX_DOCUMENT_PAGES) throw new AppError("too_many_sections", "한글 문서의 본문 구역이 너무 많아요. 문서를 나눠 올려 주세요.", 413);
-  const warning = `${format.toUpperCase()}에서 추출한 본문이에요. 구역 번호는 실제 쪽수와 다릅니다. ${format === "hwp" || result.uncertainLayout ? "표의 셀 관계와 배치는 보존되지 않을 수 있어요. " : ""}${result.images ? "포함된 이미지·도형의 글자는 추출하지 않았어요. " : ""}복잡한 표·스캔·도장이 중요하면 PDF로 저장해 다시 분석해 주세요.`;
-  return { sections, warning, index: buildIndex(sections.map((s) => ({ page: s.page, items: s.text.split("\n") })), "extracted"), uncertainLayout: format === "hwp" || result.images > 0 || result.uncertainLayout };
+  const warning = `${format.toUpperCase()}에서 추출한 본문이에요. 구역 번호는 실제 쪽수와 다릅니다. ${result.uncertainLayout ? "표의 셀 관계와 배치는 보존되지 않을 수 있어요. " : ""}${result.images ? "포함된 이미지·도형의 글자는 추출하지 않았어요. " : ""}복잡한 표·스캔·도장이 중요하면 PDF로 저장해 다시 분석해 주세요.`;
+  // Only real table-structure loss (HWPX merged cells, any HWP table) blocks source verification; a logo image does not.
+  return { sections, warning, index: buildIndex(sections.map((s) => ({ page: s.page, items: s.text.split("\n") })), "extracted"), uncertainLayout: result.uncertainLayout };
 }

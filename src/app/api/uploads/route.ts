@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { guard, limitAttempts } from "@/lib/server/guard";
 import { readJson } from "@/lib/server/http";
 import { AppError, errorResponse, json } from "@/lib/server/errors";
+import { selectedProvider } from "@/lib/server/config";
+import { maxUploadBytes } from "@/lib/limits";
 import { discardUploads, prepareUploads, uploadManifest } from "@/lib/server/staged-uploads";
 
 export const maxDuration = 60;
@@ -10,7 +12,7 @@ export async function POST(req: Request) {
   try {
     const sid = guard(req);
     await limitAttempts(req, "upload", 12);
-    return json(await prepareUploads(await readJson(req, 8192), sid, req));
+    return json(await prepareUploads(await readJson(req, 8192), sid, req, maxUploadBytes(selectedProvider())));
   } catch (error) { return errorResponse(error, randomUUID()); }
 }
 

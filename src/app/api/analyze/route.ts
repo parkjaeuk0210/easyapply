@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { AnalysisSchema } from "@/lib/schema";
 import { ANALYZE_SYSTEM, analyzeUserText } from "@/lib/prompts";
 import { detectProvider, runStructured, todayKST } from "@/lib/llm";
+import { REQUEST_BUDGET_MS, analysisOutputTokens } from "@/lib/llm-limits";
+import { maxUploadBytes } from "@/lib/limits";
 import { AppError, errorResponse, json } from "@/lib/server/errors";
-import { acquireAI, guard, limitAttempts } from "@/lib/server/guard";
+import { acquireAI, chargeAI, guard, limitAttempts } from "@/lib/server/guard";
 import { readUploads, inspectPdf, verifyEvidence } from "@/lib/server/uploads";
 import { extractHangul } from "@/lib/server/hangul";
 import { validateAnalysis } from "@/lib/server/validation";
@@ -34,7 +36,7 @@ export async function POST(req: Request) {
       consumingUpload = true;
       files = await consumeUploads(body.upload_ticket, sid, req.signal);
     } else {
-      files = await readUploads(req);
+      files = await readUploads(req, maxUploadBytes(provider));
       release = await acquireAI(req, sid, "analyze");
     }
     const first = files[0], pdf = first.mediaType === "application/pdf";
@@ -46,10 +48,13 @@ export async function POST(req: Request) {
     const text = extracted
       ? `오늘은 ${todayKST()}입니다. 한글 공고문에서 추출한 본문을 분석하세요. page는 아래 구역 번호이며 실제 쪽수는 아닙니다. transcript는 빈 배열로 두세요. 표 셀 연결이 모호하면 추측하지 말고 reading_notes에 명시하세요.\n${extracted.warning}\n\n${extracted.sections.map(s => `=== ${s.page}구역 ===\n${s.text}`).join("\n\n")}`
       : analyzeUserText({ kind: pdf ? "pdf" : "images", count: files.length, today: todayKST() });
+    // Charge only once the files proved readable, right before the paid call.
+    await chargeAI(req, sid, "analyze");
     const { data: analysis, provider: used } = await runStructured({
       system: ANALYZE_SYSTEM, text, files: extracted ? [] : files, schema: AnalysisSchema, signal: req.signal,
+      maxTokens: analysisOutputTokens(), requestId, deadline: started + REQUEST_BUDGET_MS, pages: count,
+      validate: (result) => validateAnalysis(result, count),
     });
-    validateAnalysis(analysis, count);
     const verification = verifyEvidence(analysis, index);
     if (extracted?.uncertainLayout) verification.unverified_criteria = analysis.eligibility.map(c => c.id);
     const source = extracted ? { kind: "text", name: first.name, sections: extracted.sections, warning: extracted.warning } : undefined;

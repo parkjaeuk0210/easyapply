@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import { createServer, type ServerResponse } from 'node:http';
 import { z } from 'zod';
 import { runStructured } from '../src/lib/llm';
-import { DEFAULT_OUTPUT_TOKENS, MATCH_OUTPUT_TOKENS, MAX_OUTPUT_TOKENS } from '../src/lib/llm-limits';
+import { ANALYSIS_OUTPUT_TOKENS, MATCH_OUTPUT_TOKENS, matchOutputTokens } from '../src/lib/llm-limits';
 
 type Provider = 'api' | 'openai';
 type Reply = {
@@ -104,21 +104,30 @@ async function withProvider(provider: Provider, reply: Reply, check: (bodies: Re
 }
 
 for (const provider of ['api', 'openai'] as const) {
-  test(`${provider}: default and match calls stream with the full 128000 output budget`, async () => {
-    assert.equal(DEFAULT_OUTPUT_TOKENS, 128_000);
-    assert.equal(MATCH_OUTPUT_TOKENS, 128_000);
-    assert.equal(MAX_OUTPUT_TOKENS, 128_000);
+  test(`${provider}: analysis streams with 32000 output tokens and match with 16000`, async () => {
+    assert.equal(ANALYSIS_OUTPUT_TOKENS, 32_000);
+    assert.equal(MATCH_OUTPUT_TOKENS, 16_000);
     await withProvider(provider, {}, async (bodies) => {
-      for (const maxTokens of [undefined, MATCH_OUTPUT_TOKENS]) {
+      for (const [maxTokens, expected] of [[undefined, 32_000], [matchOutputTokens(), 16_000]] as const) {
         const requestsBefore = bodies.length;
         const result = await runStructured({ ...options, maxTokens });
         assert.deepEqual(result.data, { result: 'ok' });
         assert.equal(result.provider, provider);
         assert.equal(bodies.length, requestsBefore + 1);
-        assert.equal(bodies.at(-1)?.[provider === 'api' ? 'max_tokens' : 'max_output_tokens'], 128_000);
+        assert.equal(bodies.at(-1)?.[provider === 'api' ? 'max_tokens' : 'max_output_tokens'], expected);
         assert.equal(bodies.at(-1)?.stream, true);
       }
     });
+  });
+
+  test(`${provider}: output budgets can be raised from the environment`, async () => {
+    process.env.EASYAPPLY_ANALYZE_OUTPUT_TOKENS = '48000';
+    try {
+      await withProvider(provider, {}, async (bodies) => {
+        await runStructured(options);
+        assert.equal(bodies.at(-1)?.[provider === 'api' ? 'max_tokens' : 'max_output_tokens'], 48_000);
+      });
+    } finally { delete process.env.EASYAPPLY_ANALYZE_OUTPUT_TOKENS; }
   });
 
   test(`${provider}: a complete result beyond the former 16000 output budget is retained`, async () => {
@@ -139,22 +148,22 @@ for (const provider of ['api', 'openai'] as const) {
         const usage = logs.map((line) => JSON.parse(line)).find((event) => event.event === 'ai_usage');
         assert.equal(usage?.stop_reason, provider === 'api' ? 'max_tokens' : 'max_output_tokens');
         assert.equal(usage?.output_tokens, 128_000);
-        assert.equal(usage?.max_output_tokens, 128_000);
+        assert.equal(usage?.max_output_tokens, 32_000);
       });
     });
   }
 
-  test(`${provider}: an incomplete response for another reason is not mislabeled output exhaustion`, async () => {
+  test(`${provider}: an incomplete response for another reason is retried once and not mislabeled output exhaustion`, async () => {
     await withProvider(provider, { stop: 'other_incomplete' }, async (bodies) => {
       await assert.rejects(runStructured(options), { name: 'AppError', code: provider === 'api' ? 'bad_output' : 'incomplete', status: 502 });
-      assert.equal(bodies.length, 1);
+      assert.equal(bodies.length, 2);
     });
   });
 
-  test(`${provider}: invalid schema output is rejected without retry`, async () => {
+  test(`${provider}: invalid schema output is retried once, then rejected`, async () => {
     await withProvider(provider, { json: '{"result":42}' }, async (bodies) => {
       await assert.rejects(runStructured(options), { name: 'AppError', code: 'bad_output', status: 502 });
-      assert.equal(bodies.length, 1);
+      assert.equal(bodies.length, 2);
     });
   });
 
@@ -178,9 +187,9 @@ test('api: thinking alone can exhaust the output budget and is never accepted as
   });
 });
 
-test('openai: malformed completed JSON is rejected without retry', async () => {
+test('openai: malformed completed JSON is retried once, then rejected', async () => {
   await withProvider('openai', { json: 'not JSON' }, async (bodies) => {
     await assert.rejects(runStructured(options), { name: 'AppError', code: 'bad_output', status: 502 });
-    assert.equal(bodies.length, 1);
+    assert.equal(bodies.length, 2);
   });
 });

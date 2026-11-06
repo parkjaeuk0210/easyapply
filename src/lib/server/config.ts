@@ -3,6 +3,28 @@ export const isProduction = () => process.env.NODE_ENV === "production" || isHos
 // This app is for judging: usage quotas are opt-in, not the default.
 export const usageLimitsEnabled = () => process.env.EASYAPPLY_USAGE_LIMITS === "on";
 
+// "demo" and "none" switch AI off on purpose.
+const PROVIDER_SETTINGS = ["auto", "openai", "api", "anthropic", "cli", "demo", "none"];
+export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
+
+/** EASYAPPLY_PROVIDER, or null when it is not a known setting. */
+export function providerSetting(): string | null {
+  const value = (process.env.EASYAPPLY_PROVIDER || "auto").toLowerCase();
+  return PROVIDER_SETTINGS.includes(value) ? value : null;
+}
+
+/** The provider the environment selects. "cli" still needs a local binary check. */
+export function selectedProvider(): "openai" | "api" | "cli" | "none" {
+  const setting = providerSetting();
+  const openai = !!process.env.OPENAI_API_KEY?.trim();
+  const anthropic = !!(process.env.ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_AUTH_TOKEN?.trim());
+  if (setting === "openai") return openai ? "openai" : "none";
+  if (setting === "api" || setting === "anthropic") return anthropic ? "api" : "none";
+  if (setting === "cli") return "cli";
+  if (setting !== "auto") return "none";
+  return openai ? "openai" : anthropic ? "api" : "cli";
+}
+
 export function openAIConfig() {
   const efforts = ["none", "low", "medium", "high", "xhigh", "max"] as const;
   const tiers = ["auto", "default", "flex", "priority", "fast"] as const;
@@ -46,6 +68,8 @@ export function configurationIssues(): string[] {
       if (!/^https?:$/.test(u.protocol) || u.origin !== process.env.EASYAPPLY_APP_ORIGIN) issues.push("app_origin");
     }
     intEnv("EASYAPPLY_REQUEST_TIMEOUT_MS", 240_000, 1000, 260_000);
+    intEnv("EASYAPPLY_ANALYZE_OUTPUT_TOKENS", 32_000, 1000, 128_000);
+    intEnv("EASYAPPLY_MATCH_OUTPUT_TOKENS", 16_000, 1000, 128_000);
     if (usageLimitsEnabled()) {
       intEnv("EASYAPPLY_DAILY_AI_LIMIT", 100, 1, 100_000);
       intEnv("EASYAPPLY_DAILY_IP_AI_LIMIT", 20, 1, 100_000);
@@ -53,6 +77,15 @@ export function configurationIssues(): string[] {
       intEnv("EASYAPPLY_MAX_CONCURRENT", 3, 1, 20);
     }
   } catch { issues.push("limits"); }
-  try { openAIConfig(); } catch { issues.push("openai_settings"); }
+  if (!providerSetting()) issues.push("provider");
+  // Only the active provider's settings can break a request.
+  const provider = selectedProvider();
+  if (provider === "openai") {
+    try { openAIConfig(); } catch { issues.push("openai_settings"); }
+  }
+  const effort = process.env.EASYAPPLY_EFFORT || "medium";
+  if ((provider === "api" || provider === "cli") && !EFFORTS.includes(effort as typeof EFFORTS[number])) issues.push("ai_settings");
+  const speed = process.env.EASYAPPLY_ANTHROPIC_SPEED || "standard";
+  if (provider === "api" && speed !== "standard" && speed !== "fast") issues.push("ai_settings");
   return [...new Set(issues)];
 }

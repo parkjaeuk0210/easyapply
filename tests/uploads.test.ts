@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { MAX_UPLOAD_BYTES } from '../src/lib/limits';
+import { MAX_UPLOAD_BYTES, maxUploadBytes } from '../src/lib/limits';
 import { validateUploadSpecs } from '../src/lib/server/uploads';
 import { consumeUploads, prepareUploads, uploadManifest } from '../src/lib/server/staged-uploads';
 import { privateKey, signUpload } from '../src/lib/server/tokens';
@@ -22,13 +22,22 @@ function fixture(data = Buffer.from('%PDF-1.7\nfixture')) {
 }
 
 test('upload metadata enforces 24 MiB total and 5 MiB per photo', () => {
-  const pdf = { name: 'notice.pdf', mediaType: 'application/pdf', size: MAX_UPLOAD_BYTES };
+  const pdf = { name: 'notice.pdf', mediaType: 'application/pdf', size: 25_165_824 };
   assert.doesNotThrow(() => validateUploadSpecs([pdf]));
-  assert.throws(() => validateUploadSpecs([{ ...pdf, size: MAX_UPLOAD_BYTES + 1 }]), (e: AppError) => e.status === 413);
-  const photo = { name: 'photo.jpg', mediaType: 'image/jpeg', size: 5 * 1024 * 1024 };
+  assert.throws(() => validateUploadSpecs([{ ...pdf, size: 25_165_825 }]), (e: AppError) => e.status === 413);
+  const photo = { name: 'photo.jpg', mediaType: 'image/jpeg', size: 5_242_880 };
   assert.doesNotThrow(() => validateUploadSpecs(Array(4).fill(photo)));
   assert.throws(() => validateUploadSpecs(Array(5).fill(photo)), (e: AppError) => e.status === 413);
   assert.throws(() => validateUploadSpecs([{ ...photo, size: photo.size + 1 }]));
+});
+
+test('Anthropic uploads stop at 22 MiB so base64 stays under the 32 MB request limit', () => {
+  assert.equal(maxUploadBytes('api'), 23_068_672);
+  assert.equal(maxUploadBytes('openai'), 25_165_824);
+  const pdf = { name: 'notice.pdf', mediaType: 'application/pdf', size: 23_068_673 };
+  assert.throws(() => validateUploadSpecs([pdf], maxUploadBytes('api')), (e: AppError) => e.status === 413 && /22MB/.test(e.message));
+  // base64 of the largest accepted PDF plus ~1 MB of prompt and schema still fits.
+  assert(Math.ceil(23_068_672 / 3) * 4 + 1_000_000 < 32_000_000);
 });
 
 test('upload tickets reject another session, tampering and paths outside the session', () => {

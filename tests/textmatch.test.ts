@@ -18,8 +18,9 @@ test('NFKC araea and range tildes normalize consistently', () => {
   assert.equal(normalize(once), once);
 });
 
-test('the original araea vowel is preserved instead of globally becoming punctuation', () => {
-  assert.equal(normalize('\u119E'), '\u119E');
+test('a standalone araea is a middle dot, but an archaic syllable keeps its vowel', () => {
+  assert.equal(normalize('\u119E'), '·');
+  assert.equal(normalize('대학생\u119E대학원생'), '대학생·대학원생');
   assert.equal(normalize('ᄀ\u119E'), 'ᄀ\u119E');
 });
 
@@ -50,7 +51,7 @@ test('normalization preserves highlights across PDF text items', () => {
 
 function evaluateCitation(raw: string, quote: string) {
   const a = AnalysisSchema.parse(structuredClone(sample.analysis));
-  a.eligibility = [{ id: 'c1', category: '자격', kind: 'required', requirement: quote, detail: null, evidence: [{ page: 1, quote }] }];
+  a.eligibility = [{ id: 'c1', category: '자격', kind: 'required', requirement: quote, detail: null, applies_to: null, evidence: [{ page: 1, quote }] }];
   a.profile_questions = [{ id: 'q1', label: '해당하나요?', input: 'yes_no', options: [], unit: null, help: null, criteria_ids: ['c1'] }];
   a.schedule = [];
   const verification = verifyEvidence(a, buildIndex([{ page: 1, items: [raw] }], 'extracted'));

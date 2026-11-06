@@ -1,7 +1,17 @@
 // Runs in a bounded worker. Never evaluates document scripts or opens external URLs.
 /* eslint-disable @typescript-eslint/no-require-imports -- Node worker entry is deliberately CommonJS for deployment tracing. */
 const { parentPort, workerData } = require('node:worker_threads');
-const { inflateRawSync } = require('node:zlib');
+const zlib = require('node:zlib');
+const { inflateRawSync } = zlib;
+// zlib.crc32 exists from Node 22.2; the bitwise fallback keeps older 22.x runtimes from rejecting every HWPX.
+const crc32 = zlib.crc32 ?? ((data) => {
+  let c = ~0;
+  for (const byte of data) {
+    c ^= byte;
+    for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+  }
+  return ~c >>> 0;
+});
 const MAX = 8 * 1024 * 1024;
 function fail(message) { throw new Error(message); }
 (async () => {
@@ -43,6 +53,8 @@ function fail(message) { throw new Error(message); }
         let length = h >>> 20;
         if (length === 4095) { if (at + 4 > data.length) fail('invalid'); length = data.readUInt32LE(at); at += 4; }
         if (at + length > data.length) fail('invalid');
+        // HWPTAG_TABLE: table cells are flattened into separate lines, so their relations are lost.
+        if (tag === 77) uncertainLayout = true;
         if (tag === 67) {
           const para = data.subarray(at, at + length);
           if (para.length % 2) fail('invalid');
@@ -77,7 +89,7 @@ function fail(message) { throw new Error(message); }
     for (let n = 0; n < count; n++) {
       if (at + 46 > end || bytes.readUInt32LE(at) !== 0x02014b50) fail('invalid');
       const flags = bytes.readUInt16LE(at + 8), method = bytes.readUInt16LE(at + 10);
-      const compressed = bytes.readUInt32LE(at + 20), size = bytes.readUInt32LE(at + 24);
+      const crc = bytes.readUInt32LE(at + 16), compressed = bytes.readUInt32LE(at + 20), size = bytes.readUInt32LE(at + 24);
       const namesize = bytes.readUInt16LE(at + 28), extrasize = bytes.readUInt16LE(at + 30), comment = bytes.readUInt16LE(at + 32);
       const local = bytes.readUInt32LE(at + 42);
       if (at + 46 + namesize + extrasize + comment > end) fail('invalid');
@@ -86,21 +98,40 @@ function fail(message) { throw new Error(message); }
       total += size;
       if (size > MAX || total > 32 * 1024 * 1024) fail('too_long');
       if (entries.has(name)) fail('invalid');
-      entries.set(name, { method, size, compressed, local });
+      entries.set(name, { method, size, compressed, local, crc });
       at += 46 + namesize + extrasize + comment;
     }
-    const names = [...entries.keys()].filter(n => /^Contents\/section\d+\.xml$/i.test(n)).sort((a,b) => Number(a.match(/\d+/)[0])-Number(b.match(/\d+/)[0]));
-    if (!names.length || names.length > 100) fail('invalid');
-    for (const name of names) {
+    // Reads one entry and rejects size or CRC32 mismatches (a silently altered number must not be analysed).
+    const read = (name) => {
       const e = entries.get(name), p = e.local;
       if (p + 30 > bytes.length || bytes.readUInt32LE(p) !== 0x04034b50) fail('invalid');
       const start = p + 30 + bytes.readUInt16LE(p + 26) + bytes.readUInt16LE(p + 28);
       if (start + e.compressed > offset) fail('invalid');
       const input = bytes.subarray(start, start + e.compressed);
       const data = e.method === 0 ? input : e.method === 8 ? inflateRawSync(input, { maxOutputLength: MAX }) : fail('invalid');
-      if (data.length !== e.size) fail('invalid');
+      if (data.length !== e.size || crc32(data) !== e.crc) fail('invalid');
       if (/<!DOCTYPE|<!ENTITY/i.test(data.toString('utf8'))) fail('invalid');
-      const root = parseXml(data);
+      return data;
+    };
+    const names = [...entries.keys()].filter(n => /^Contents\/section\d+\.xml$/i.test(n)).sort((a,b) => Number(a.match(/\d+/)[0])-Number(b.match(/\d+/)[0]));
+    if (!names.length || names.length > 100) fail('invalid');
+    // Every body section the package manifest lists in its spine must be present.
+    if (entries.has('Contents/content.hpf')) {
+      const pkg = parseXml(read('Contents/content.hpf'));
+      const items = new Map(), spine = [];
+      const scan = (node, depth = 0) => {
+        if (depth > 100) fail('too_long');
+        if (node.local === 'item') items.set(node.attrAny('id'), node.attrAny('href'));
+        if (node.local === 'itemref') spine.push(node.attrAny('idref'));
+        node.childElems().forEach(child => scan(child, depth + 1));
+      };
+      scan(pkg);
+      for (const href of spine.map(id => items.get(id) ?? '')) {
+        if (/section\d+\.xml$/i.test(href) && !entries.has(href) && !entries.has(`Contents/${href}`)) fail('invalid');
+      }
+    }
+    for (const name of names) {
+      const root = parseXml(read(name));
       const walk = (node, depth = 0) => {
         if (depth > 100) fail('too_long');
         // Flattening cannot preserve merged-cell relationships or unknown spans.

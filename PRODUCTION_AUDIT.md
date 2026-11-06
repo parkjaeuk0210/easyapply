@@ -6,11 +6,11 @@
 
 이 절만 현재 사실입니다. 아래 절들은 작성 당시의 기록이며 그 안의 OpenAI 모델·테스트 수·한도 수치는 당시 값입니다.
 
-- 배포: 공개 주소 https://easyapply-five.vercel.app 은 Production `dpl_5eQuXZrXd5P6SaEsGtDUjqkmvXBC`(11-07 00:36:46 생성)를 가리킵니다. 이 배포는 22:59 배포(`dpl_927pMAdsdCdn4Hritx5VS6G1DguL`) 소스에 11-06 23:50 ~ 11-07 00:02의 UI 정리(파일 11개: `src/components/*`, `src/app/layout.tsx`, `src/app/globals.css`, `src/lib/client-api.ts`, `tests/ui-feedback.test.ts`)를 더한 것으로, 현재 작업 폴더와 같습니다(00:02 이후 소스 변경 없음). Claude 전환 배포는 22:27 `dpl_EJMzD6oShTJnCn4rgffiuyjH2nbZ`입니다. 승격 전 확인: 테스트 112/112, 타입체크 통과, 상태 API configured, 첫 화면 HTML에 새 문구 포함·제공자 배지 없음. 상태 API에 빌드 ID가 없어 산출물 단위의 일치는 확인하지 않았습니다. 되돌리기: `vercel promote https://easyapply-p5ygw3s0t-feras-projects-59a977f0.vercel.app`.
+- 배포: 공개 주소 https://easyapply-five.vercel.app 의 최신 배포는 Vercel 대시보드 기준입니다.
 - AI: Anthropic API `claude-opus-5-5`, 추론 `medium`, 처리 속도 `fast`(23:00 상태 API `provider:"api"`, `ready:true`). Production에는 `OPENAI_API_KEY`와 OpenAI 설정 3개도 남아 있지만 `EASYAPPLY_PROVIDER=api`라 사용하지 않습니다.
-- 호출 한도: **해제**(`usage_limits_enabled:false`). Production에 `EASYAPPLY_USAGE_LIMITS`, `EASYAPPLY_DAILY_IP_AI_LIMIT`, `EASYAPPLY_DAILY_SESSION_AI_LIMIT`, `EASYAPPLY_ACCESS_CODE`가 없어 이용 코드 없이 세션을 받고, Redis로 같은 세션의 중복 실행만 막습니다. 켜려면 `EASYAPPLY_USAGE_LIMITS=on`을 추가하고 재배포합니다. 이때 IP·세션별 10분당 분석 8회·판정 24회는 코드 고정값(`src/lib/server/guard.ts:160`)이라 같은 Wi-Fi의 심사위원들이 함께 걸릴 수 있습니다. 전체 일일·동시 한도는 등록된 `EASYAPPLY_DAILY_AI_LIMIT`·`EASYAPPLY_MAX_CONCURRENT` 값을, IP·세션별 24시간 한도는 기본 20회를 따릅니다.
-- 업로드·형식: 합계 24 MiB, 함수 직접 전송 4 MiB, 초과분은 비공개 Blob(`large_uploads:true`). PDF·HWP·HWPX·JPG·PNG·WEBP·GIF.
-- 검증: `npm test` 112/112 통과(22:51), typecheck·lint 통과(22:39). 변경 내용은 맨 아래 [Claude 전환과 후속 수정](#claude-opus-55-운영-전환과-후속-수정-2220-이후)에 있습니다.
+- 호출 한도: **해제**(`usage_limits_enabled:false`). Production에 `EASYAPPLY_USAGE_LIMITS`, `EASYAPPLY_DAILY_IP_AI_LIMIT`, `EASYAPPLY_DAILY_SESSION_AI_LIMIT`, `EASYAPPLY_ACCESS_CODE`가 없어 이용 코드 없이 세션을 받고, Redis로 같은 세션의 중복 실행만 막습니다. 켜려면 `EASYAPPLY_USAGE_LIMITS=on`을 추가하고 재배포합니다. 이때 IP·세션별 10분당 분석 8회·판정 24회는 코드 고정값(`src/lib/server/guard.ts`의 `quota()`)이라 같은 Wi-Fi의 심사위원들이 함께 걸릴 수 있습니다. 전체 일일·동시 한도는 등록된 `EASYAPPLY_DAILY_AI_LIMIT`·`EASYAPPLY_MAX_CONCURRENT` 값을, IP·세션별 24시간 한도는 기본 20회를 따릅니다.
+- 업로드·형식: 합계 상한은 공급자별(Anthropic 22 MiB, OpenAI·로컬 24 MiB), 함수 직접 전송 4 MiB, 초과분은 비공개 Blob(`large_uploads:true`). PDF·HWP·HWPX·JPG·PNG·WEBP·GIF.
+- 검증: `npm test`, `npm run typecheck`(`next typegen && tsc --noEmit`), `npm run lint`. 변경 내용은 맨 아래 [Claude 전환과 후속 수정](#claude-opus-55-운영-전환과-후속-수정-2220-이후)에 있습니다.
 
 ## 초기 결론 (OpenAI 운영 당시)
 
@@ -83,11 +83,11 @@ OpenAI API로 실제 PDF 분석 → 서명된 결과 기반 자격 판정 → �
 ## 남는 제품 한계
 
 - HWP의 복잡한 표, HWPX의 병합 셀 의미, 그림·스캔 속 글자와 도장은 완전 인식을 보장하지 않습니다. HWP 파일, 그리고 이미지나 해석할 수 없는 병합 표가 있는 HWPX는 답변과 관계없이 모든 자격 조건을 '확인 필요'로 제한합니다. 중요한 레이아웃은 PDF 변환 후 다시 확인해야 합니다.
-- 모델 출력이 판정 서버 검증(`src/lib/server/validation.ts:52-55`: 조건 누락·중복, 없는 서류 ID, 검색 제안 중복)에 하나라도 걸리면 결과 전체를 버리고 502 `bad_output`을 반환합니다. SDK 재시도는 끄고(`llm.ts` `maxRetries: 0`) 앱 차원의 자동 재시도도 없습니다. 2026-11-06 실제 공고 판정 9회 중 3회가 이 경로의 502였습니다(`/Users/online/reports/easyapply-eval-20261106/rubric-2300/00-SUMMARY.md`).
+- 형식 위반(시각 "24:00", 개수·길이 초과, 빈 인용, 대문자 ID, 총 쪽수를 넘는 쪽 번호)은 서버가 결정적으로 고칩니다(`src/lib/server/repair.ts`). 그래도 스키마나 서버 검증에 걸리거나 공급자 일시 오류(429·5xx·529·연결 끊김)가 나면 요청 시간이 남아 있을 때 한 번만 다시 요청하고, 두 번째도 실패하면 502를 반환합니다. 2026-11-06 실제 공고 판정 9회 중 3회가 재시도가 없던 시절 이 경로의 502였습니다(`/Users/online/reports/easyapply-eval-20261106/rubric-2300/00-SUMMARY.md`).
 - 현재 운영은 호출 한도가 해제되어 공개 주소의 누구나 세션을 받아 유료 AI 호출을 반복할 수 있습니다. 같은 세션의 동시 실행만 막으므로 비용 상한은 공급자 계정 설정에만 의존합니다.
 - 같은 AI가 읽은 이미지 판독문은 독립적인 원문 검증 자료가 아닙니다. 독립 텍스트가 없는 조건은 자동으로 충족 판정하지 않습니다.
 - 이용 코드는 공유 접근 통제이며 개별 회원 계정/권한 관리 시스템은 아닙니다. 현재 제품은 문서/답변을 DB에 보관하지 않는 단일 분석 흐름입니다.
-- 장기 작업 큐와 사용자별 분석 내역 보관은 구현 범위에 포함하지 않았습니다. 업로드는 24 MiB까지 지원하지만 AI 분석 시간·200쪽·추출 100만 자 제한은 유지합니다.
+- 장기 작업 큐와 사용자별 분석 내역 보관은 구현 범위에 포함하지 않았습니다. 업로드는 공급자별 22~24 MiB까지 지원하지만 AI 분석 시간·200쪽·추출 100만 자 제한은 유지합니다.
 - 개인정보 처리 고지의 운영자 정보·실제 서비스 정책은 공개 운영 주체가 확정해야 합니다. AI 제공자 전송 사실과 앱 자체 저장 범위는 화면/README에 표시했습니다.
 
 기존 폴더에 Git 메타데이터가 없어 커밋은 만들지 않았습니다. 수정 전 소스는 위 증거 폴더의 `before/`에 보존했습니다. 사용자의 환경파일은 이 백업에 포함하지 않았습니다.

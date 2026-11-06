@@ -1,10 +1,11 @@
 import type { InputFile } from "../llm";
-import { DIRECT_UPLOAD_BYTES, MAX_UPLOAD_BYTES } from "../limits";
+import { HOSTED_DIRECT_UPLOAD_BYTES, MAX_UPLOAD_BYTES } from "../limits";
 import { MAX_DOCUMENT_PAGES, MAX_EXTRACTED_CHARS } from "../document-limits";
 import { buildIndex, locate, type TextIndex } from "../textmatch";
 import type { Analysis } from "../schema";
 import { AppError } from "./errors";
 import { readBody } from "./http";
+import { isHosted } from "./config";
 import { fileMediaType, SUPPORTED_TYPES } from "../filetypes";
 
 const TYPES = SUPPORTED_TYPES;
@@ -30,8 +31,10 @@ export function matchesSignature(type: string, b: Buffer) {
   return false;
 }
 
-export async function readUploads(req: Request): Promise<InputFile[]> {
-  const bytes = await readBody(req, DIRECT_UPLOAD_BYTES + 128 * 1024, "multipart/form-data");
+/** `maxBytes` is the active provider's upload limit (see limits.ts). */
+export async function readUploads(req: Request, maxBytes = MAX_UPLOAD_BYTES): Promise<InputFile[]> {
+  const limit = isHosted() ? Math.min(HOSTED_DIRECT_UPLOAD_BYTES, maxBytes) : maxBytes;
+  const bytes = await readBody(req, limit + 128 * 1024, "multipart/form-data");
   let form: FormData;
   try { form = await new Response(bytes as BodyInit, { headers: { "Content-Type": req.headers.get("content-type")! } }).formData(); }
   catch { throw new AppError("invalid_input", "업로드한 파일을 읽지 못했어요.", 400); }
@@ -43,7 +46,7 @@ export async function readUploads(req: Request): Promise<InputFile[]> {
   if (docs.length && files.length !== 1) throw new AppError("invalid_input", "PDF·한글 문서는 한 번에 한 개만 올려 주세요.", 400);
   if (files.some((f) => !TYPES.includes(f.type))) throw new AppError("unsupported_file", "PDF, HWP, HWPX, JPG, PNG, WEBP, GIF 파일을 지원해요. HEIC는 JPG로 변환해 주세요.", 415);
   if (files.some((f) => !f.size)) throw new AppError("empty_file", "내용이 없는 파일이에요.", 400);
-  validateUploadSpecs(files.map(f => ({ name: f.name, mediaType: f.type, size: f.size })), DIRECT_UPLOAD_BYTES);
+  validateUploadSpecs(files.map(f => ({ name: f.name, mediaType: f.type, size: f.size })), limit);
   const input: InputFile[] = [];
   for (const file of files) {
     const data = Buffer.from(await file.arrayBuffer());
@@ -85,20 +88,37 @@ export async function inspectPdf(file: InputFile, signal: AbortSignal): Promise<
   }
 }
 
+type Evidence = Analysis["contact_evidence"][number];
+
 export function verifyEvidence(a: Analysis, index: TextIndex | null) {
   const all = [...a.benefits, ...a.schedule, ...a.how_to_apply, ...a.eligibility, ...a.documents, ...a.cautions, ...a.glossary].flatMap((i) => i.evidence).concat(a.contact_evidence);
   const counts = { exact: 0, fuzzy: 0, missing: 0, unverified: 0 };
-  const confidence = (e: { page: number; quote: string }) => {
-    const page = index?.pages.find((p) => p.page === e.page);
-    if (!page || page.norm.length < 20) return "unverified";
-    const result = locate({ ...index!, pages: [page], hasText: true }, e.page, e.quote);
-    return result.status === "none" ? "missing" : result.status === "unknown" ? "unverified" : result.status;
+  // Quotes that matched exactly one page away from the cited page (the browser highlights the same page).
+  const pageCorrections: { page: number; found_page: number; quote: string }[] = [];
+  const results = new Map<Evidence, keyof typeof counts>();
+  const statusOn = (page: TextIndex["pages"][number] | undefined, quote: string) =>
+    !page || page.norm.length < 20 ? null : locate({ ...index!, pages: [page], hasText: true }, page.page, quote).status;
+  const check = (e: Evidence): keyof typeof counts => {
+    const own = statusOn(index?.pages.find((p) => p.page === e.page), e.quote);
+    if (own === "exact") return "exact";
+    const near = index?.pages.find((p) => Math.abs(p.page - e.page) === 1 && statusOn(p, e.quote) === "exact");
+    if (near) {
+      pageCorrections.push({ page: e.page, found_page: near.page, quote: e.quote });
+      return "exact";
+    }
+    return own === null || own === "unknown" ? "unverified" : own === "none" ? "missing" : own;
+  };
+  const confidence = (e: Evidence) => {
+    if (!results.has(e)) results.set(e, check(e));
+    return results.get(e)!;
   };
   for (const e of all) counts[confidence(e)]++;
   return {
     ...counts,
     // OCR produced by the same model is NOT independent source verification.
     method: index?.hasText ? index.source === "extracted" ? "extracted_text" : "pdf_text" : "unverified_scan_or_image",
+    // Eligibility still requires an exact match for every quote; fuzzy never verifies a criterion.
     unverified_criteria: a.eligibility.filter((c) => !c.evidence.length || c.evidence.some((e) => confidence(e) !== "exact")).map((c) => c.id),
+    page_corrections: pageCorrections,
   };
 }

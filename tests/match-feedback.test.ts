@@ -9,8 +9,8 @@ function fixture() {
   const analysis = AnalysisSchema.parse(structuredClone(sample.analysis));
   const criterion = analysis.eligibility[0];
   analysis.eligibility = [
-    { ...criterion, id: 'c1', category: '거주지', kind: 'required', requirement: '서울시에 거주해야 해요.' },
-    { ...criterion, id: 'c2', category: '소득', kind: 'required', requirement: '소득 기준을 충족해야 해요.' },
+    { ...criterion, id: 'c1', category: '거주지', kind: 'required', requirement: '서울시에 거주해야 해요.', detail: null, evidence: [{ page: 1, quote: '공고일 현재 서울시에 주민등록을 둔 자' }] },
+    { ...criterion, id: 'c2', category: '소득', kind: 'required', requirement: '소득 기준을 충족해야 해요.', detail: null, evidence: [{ page: 1, quote: '기준 중위소득 100% 이하' }] },
   ];
   analysis.profile_questions = [
     { id: 'q1', label: '현재 거주 지역은 어디인가요?', input: 'select', options: ['서울시', '강원도', '잘 모르겠어요'], unit: null, help: null, criteria_ids: ['c1'] },
@@ -66,20 +66,26 @@ test('missing or uncertain cited answers cannot establish a partial-answer failu
   }
 });
 
-test('partial answers cannot become met while fully answered legacy failures remain supported', () => {
+test('partial answers cannot become met and failures without cited answers are no longer accepted', () => {
   const { analysis, match, answers } = fixture();
   match.criteria[0].status = 'met';
   assert.equal(finalizeMatch(analysis, answers, match).criteria[0].status, 'check');
   match.criteria[0].status = 'not_met'; match.criteria[0].failed_answer_ids = [];
-  assert.equal(finalizeMatch(analysis, { ...answers, q2: '2년' }, match).criteria[0].status, 'not_met');
+  assert.equal(finalizeMatch(analysis, { ...answers, q2: '2년' }, match).criteria[0].status, 'check');
 });
 
-test('foreign, unrelated and duplicate failure answer references are rejected', () => {
-  for (const refs of [['missing'], ['q3'], ['q1', 'q1']]) {
+test('foreign or unrelated failure references downgrade to check; duplicates are merged', () => {
+  for (const refs of [['missing'], ['q3']]) {
     const { analysis, match, answers } = fixture();
     match.criteria[0].failed_answer_ids = refs;
-    assert.throws(() => finalizeMatch(analysis, answers, match), (error: AppError) => error.code === 'bad_output');
+    const result = finalizeMatch(analysis, answers, match);
+    assert.equal(result.criteria[0].status, 'check', refs.join());
+    assert.deepEqual(result.criteria[0].failed_answer_ids, []);
+    assert.equal(result.overall, 'needs_check');
   }
+  const { analysis, match, answers } = fixture();
+  match.criteria[0].failed_answer_ids = ['q1', 'q1'];
+  assert.deepEqual(finalizeMatch(analysis, answers, match).criteria[0].failed_answer_ids, ['q1']);
 });
 
 test('search suggestions follow final required and exclusion failures, never preferences or met criteria', () => {
@@ -94,13 +100,12 @@ test('search suggestions follow final required and exclusion failures, never pre
   assert.deepEqual(preferred.next_searches, []);
 });
 
-test('foreign and duplicate search criterion references are rejected', () => {
-  for (const duplicate of [false, true]) {
-    const { analysis, match, answers } = fixture();
-    if (duplicate) match.next_searches.push({ ...match.next_searches[0] });
-    else match.next_searches[0].criterion_id = 'missing';
-    assert.throws(() => finalizeMatch(analysis, answers, match), (error: AppError) => error.code === 'bad_output');
-  }
+test('foreign search references are dropped and only the first suggestion per condition is kept', () => {
+  const { analysis, match, answers } = fixture();
+  match.next_searches.push({ ...match.next_searches[0], query: '두 번째 검색어' });
+  assert.deepEqual(finalizeMatch(analysis, answers, match).next_searches.map((s) => s.query), ['강원도 청년 주거 지원']);
+  match.next_searches = [{ ...match.next_searches[0], criterion_id: 'missing' }];
+  assert.deepEqual(finalizeMatch(analysis, answers, match).next_searches, []);
 });
 
 test('contact evidence obeys the same page bounds as other source citations', () => {

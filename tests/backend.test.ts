@@ -52,12 +52,17 @@ test('blank answers and unverified source can never result in met', () => {
   const r = finalizeMatch(a, {}, m); assert.equal(r.overall, 'needs_check'); assert(r.criteria.every(c => c.status === 'check'));
   const verified = finalizeMatch(a, demo.answers, m, [a.eligibility[0].id]); assert.equal(verified.criteria[0].status, 'check');
 });
-test('preference failure does not disqualify; missing/duplicate/foreign model criteria rejected', () => {
+test('preference failure does not disqualify; a missing model criterion becomes check instead of a 502', () => {
   const a = analysis(), m = match();
   a.profile_questions = [{ id:'q1', label:'확인', input:'text', options:[], unit:null, help:null, criteria_ids:a.eligibility.map(c=>c.id) }];
-  a.eligibility[0].kind='preference'; m.criteria.forEach(c=>c.status='met'); m.criteria[0].status='not_met';
+  a.eligibility[0].kind='preference'; m.criteria.forEach(c=>c.status='met'); m.criteria[0].status='not_met'; m.criteria[0].failed_answer_ids=['q1'];
   assert.equal(finalizeMatch(a,{q1:'확인'},m).overall,'likely_eligible');
-  m.criteria.pop(); assert.throws(()=>finalizeMatch(a,{q1:'확인'},m));
+  const dropped = m.criteria.find(c => a.eligibility.find(e => e.id === c.criterion_id)?.kind === 'required')!.criterion_id;
+  m.criteria = m.criteria.filter(c => c.criterion_id !== dropped);
+  const r = finalizeMatch(a,{q1:'확인'},m);
+  assert.equal(r.criteria.length, a.eligibility.length);
+  assert.equal(r.criteria.find(c => c.criterion_id === dropped)?.status, 'check');
+  assert.equal(r.overall, 'needs_check');
 });
 test('expired applications replace document and submission tasks with a reopening check', () => {
   const a=analysis(), m=match(); m.checklist=[];
@@ -73,7 +78,7 @@ test('ineligible results keep verification and schedule tasks without adding app
   a.profile_questions = [{ id:'q1', label:'확인', input:'text', options:[], unit:null, help:null, criteria_ids:a.eligibility.map(c=>c.id) }];
   m.criteria.forEach(c => { c.status = 'met'; });
   const failed = a.eligibility.find(c => c.kind !== 'preference')!;
-  m.criteria.find(c => c.criterion_id === failed.id)!.status = 'not_met';
+  Object.assign(m.criteria.find(c => c.criterion_id === failed.id)!, { status: 'not_met', failed_answer_ids: ['q1'] });
   // The server's validated criteria, not the model's claimed overall result, decide.
   m.overall = 'likely_eligible';
   m.checklist = [
