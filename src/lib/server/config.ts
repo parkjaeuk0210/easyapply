@@ -1,6 +1,18 @@
 export const isHosted = () => process.env.VERCEL === "1";
 export const isProduction = () => process.env.NODE_ENV === "production" || isHosted();
 
+export function openAIConfig() {
+  const efforts = ["none", "low", "medium", "high", "xhigh", "max"] as const;
+  const tiers = ["auto", "default", "flex", "priority", "fast"] as const;
+  const model = process.env.EASYAPPLY_OPENAI_MODEL || "gpt-6-astra";
+  const effort = (process.env.EASYAPPLY_OPENAI_REASONING_EFFORT || "medium") as typeof efforts[number];
+  const tier = (process.env.EASYAPPLY_OPENAI_SERVICE_TIER || "fast") as typeof tiers[number];
+  if (!efforts.includes(effort) || !tiers.includes(tier) || (model.startsWith("gpt-6-astra") && effort === "none")) {
+    throw new Error("Invalid OpenAI configuration");
+  }
+  return { model, reasoning: { effort }, service_tier: tier };
+}
+
 export function intEnv(name: string, fallback: number, min: number, max: number) {
   const raw = process.env[name];
   if (!raw) return fallback;
@@ -35,5 +47,6 @@ export function configurationIssues(): string[] {
     intEnv("EASYAPPLY_DAILY_AI_LIMIT", 100, 1, 100_000);
     intEnv("EASYAPPLY_MAX_CONCURRENT", 3, 1, 20);
   } catch { issues.push("limits"); }
+  try { openAIConfig(); } catch { issues.push("openai_settings"); }
   return [...new Set(issues)];
 }

@@ -1,5 +1,5 @@
 import type { InputFile } from "../llm";
-import { MAX_UPLOAD_BYTES } from "../limits";
+import { DIRECT_UPLOAD_BYTES, MAX_UPLOAD_BYTES } from "../limits";
 import { buildIndex, locate, type TextIndex } from "../textmatch";
 import type { Analysis } from "../schema";
 import { AppError } from "./errors";
@@ -7,6 +7,16 @@ import { readBody } from "./http";
 import { fileMediaType, SUPPORTED_TYPES } from "../filetypes";
 
 const TYPES = SUPPORTED_TYPES;
+
+export type UploadSpec = { name: string; mediaType: string; size: number };
+
+export function validateUploadSpecs(files: UploadSpec[], maxBytes = MAX_UPLOAD_BYTES) {
+  if (!files.length || files.length > 10) throw new AppError("invalid_input", "문서는 한 개, 사진은 최대 10장까지 올려 주세요.", 400);
+  if (files.some(f => !f.name || f.name.length > 200 || !Number.isSafeInteger(f.size) || f.size <= 0)) throw new AppError("invalid_input", "파일 이름과 용량을 확인해 주세요.", 400);
+  if (files.some(f => !TYPES.includes(f.mediaType))) throw new AppError("unsupported_file", "PDF, HWP, HWPX, JPG, PNG, WEBP, GIF 파일을 지원해요.", 415);
+  if (files.some(f => !f.mediaType.startsWith("image/")) && files.length !== 1) throw new AppError("invalid_input", "PDF·한글 문서는 한 번에 한 개만 올려 주세요.", 400);
+  if (files.reduce((sum, f) => sum + f.size, 0) > maxBytes || files.some(f => f.mediaType.startsWith("image/") && f.size > 5 * 1024 * 1024)) throw new AppError("too_large", "파일이 너무 커요. 문서는 25MB, 사진은 장당 5MB·합계 25MB까지 올릴 수 있어요.", 413);
+}
 
 export function matchesSignature(type: string, b: Buffer) {
   if (type === "application/x-hwp") return b.subarray(0, 8).equals(Buffer.from([208, 207, 17, 224, 161, 177, 26, 225]));
@@ -20,7 +30,7 @@ export function matchesSignature(type: string, b: Buffer) {
 }
 
 export async function readUploads(req: Request): Promise<InputFile[]> {
-  const bytes = await readBody(req, MAX_UPLOAD_BYTES + 128 * 1024, "multipart/form-data");
+  const bytes = await readBody(req, DIRECT_UPLOAD_BYTES + 128 * 1024, "multipart/form-data");
   let form: FormData;
   try { form = await new Response(bytes as BodyInit, { headers: { "Content-Type": req.headers.get("content-type")! } }).formData(); }
   catch { throw new AppError("invalid_input", "업로드한 파일을 읽지 못했어요.", 400); }
@@ -32,7 +42,7 @@ export async function readUploads(req: Request): Promise<InputFile[]> {
   if (docs.length && files.length !== 1) throw new AppError("invalid_input", "PDF·한글 문서는 한 번에 한 개만 올려 주세요.", 400);
   if (files.some((f) => !TYPES.includes(f.type))) throw new AppError("unsupported_file", "PDF, HWP, HWPX, JPG, PNG, WEBP, GIF 파일을 지원해요. HEIC는 JPG로 변환해 주세요.", 415);
   if (files.some((f) => !f.size)) throw new AppError("empty_file", "내용이 없는 파일이에요.", 400);
-  if (files.reduce((s, f) => s + f.size, 0) > MAX_UPLOAD_BYTES || files.some((f) => f.type.startsWith("image/") && f.size > 5 * 1024 * 1024)) throw new AppError("too_large", "파일이 너무 커요. 파일 크기나 장수를 줄여 주세요.", 413);
+  validateUploadSpecs(files.map(f => ({ name: f.name, mediaType: f.type, size: f.size })), DIRECT_UPLOAD_BYTES);
   const input: InputFile[] = [];
   for (const file of files) {
     const data = Buffer.from(await file.arrayBuffer());
@@ -75,7 +85,7 @@ export async function inspectPdf(file: InputFile, signal: AbortSignal): Promise<
 }
 
 export function verifyEvidence(a: Analysis, index: TextIndex | null) {
-  const all = [...a.benefits, ...a.schedule, ...a.how_to_apply, ...a.eligibility, ...a.documents, ...a.cautions, ...a.glossary].flatMap((i) => i.evidence);
+  const all = [...a.benefits, ...a.schedule, ...a.how_to_apply, ...a.eligibility, ...a.documents, ...a.cautions, ...a.glossary].flatMap((i) => i.evidence).concat(a.contact_evidence);
   const counts = { exact: 0, fuzzy: 0, missing: 0, unverified: 0 };
   const confidence = (e: { page: number; quote: string }) => {
     const page = index?.pages.find((p) => p.page === e.page);

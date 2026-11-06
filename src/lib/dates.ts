@@ -32,12 +32,16 @@ export function shortDate(iso: string | null | undefined) {
   return `${d.getUTCMonth() + 1}/${d.getUTCDate()}(${WD[d.getUTCDay()]})`;
 }
 
-export function mainDeadline(a: Analysis) {
-  const deadlines = a.schedule.filter((s) => s.is_deadline && s.date_iso && parseISO(s.date_iso)).sort((x, y) => x.date_iso!.localeCompare(y.date_iso!));
+export function applicationDeadlines(a: Analysis) {
+  return a.schedule.filter((s) => s.is_deadline && s.is_application_deadline);
+}
+
+export function mainDeadline(a: Analysis, today = todayLocalISO()) {
+  const deadlines = applicationDeadlines(a).filter((s) => s.date_iso && parseISO(s.date_iso)).sort((x, y) => x.date_iso!.localeCompare(y.date_iso!));
   if (!deadlines.length) return null;
   // 아직 지나지 않은 가장 이른 마감, 없으면 마지막 마감
   const upcoming = deadlines
-    .filter((s) => (daysUntil(s.date_iso) ?? -1) >= 0)
+    .filter((s) => (daysUntil(s.date_iso, today) ?? -1) >= 0)
     .sort((x, y) => x.date_iso!.localeCompare(y.date_iso!));
   return upcoming[0] ?? deadlines[deadlines.length - 1];
 }

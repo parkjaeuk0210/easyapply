@@ -1,6 +1,5 @@
 import Anthropic from "@anthropic-ai/sdk";
 import OpenAI from "openai";
-import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { zodTextFormat } from "openai/helpers/zod";
 import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
@@ -10,13 +9,13 @@ import path from "node:path";
 import type { z } from "zod";
 import { toOutputSchema } from "./schema";
 import { AppError } from "./server/errors";
-import { intEnv, isHosted, isProduction } from "./server/config";
+import { intEnv, isHosted, isProduction, openAIConfig } from "./server/config";
 
 export type Provider = "openai" | "api" | "cli" | "none";
 export type InputFile = { name: string; mediaType: string; data: Buffer };
 type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 export const MODEL = process.env.EASYAPPLY_MODEL || "claude-opus-5-5";
-export const OPENAI_MODEL = process.env.EASYAPPLY_OPENAI_MODEL || "gpt-5.4";
+export const OPENAI_MODEL = process.env.EASYAPPLY_OPENAI_MODEL || "gpt-6-astra";
 export { AppError as LlmError } from "./server/errors";
 
 const hasAnthropic = () => !!(process.env.ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_AUTH_TOKEN?.trim());
@@ -50,7 +49,7 @@ type Options<S extends z.ZodType = z.ZodType> = {
 
 export async function runStructured<S extends z.ZodType>(opts: Options<S>): Promise<{ data: z.infer<S>; provider: Provider }> {
   const provider = await detectProvider();
-  if (provider === "none") throw new AppError("no_provider", "AI 연결이 준비되지 않았어요. 샘플 체험을 이용해 주세요.", 503);
+  if (provider === "none") throw new AppError("no_provider", "AI 연결이 준비되지 않았어요. 잠시 후 다시 시도해 주세요.", 503);
   const effort = (process.env.EASYAPPLY_EFFORT || "medium") as Effort;
   if (!["low", "medium", "high", "xhigh", "max"].includes(effort)) throw new AppError("configuration", "AI 연결 설정을 확인해 주세요.", 503);
   const timeout = new AbortController();
@@ -76,6 +75,9 @@ export async function runStructured<S extends z.ZodType>(opts: Options<S>): Prom
 }
 
 async function viaOpenAI(opts: Options, signal: AbortSignal): Promise<unknown> {
+  let settings: ReturnType<typeof openAIConfig>;
+  try { settings = openAIConfig(); }
+  catch { throw new AppError("configuration", "AI 모델 설정을 확인해 주세요.", 503); }
   const client = new OpenAI({ maxRetries: 0, timeout: 260_000 });
   const content: OpenAI.Responses.ResponseInputContent[] = [];
   for (const f of opts.files ?? []) {
@@ -85,18 +87,24 @@ async function viaOpenAI(opts: Options, signal: AbortSignal): Promise<unknown> {
   }
   content.push({ type: "input_text", text: opts.text });
   const response = await client.responses.stream({
-    model: OPENAI_MODEL, instructions: opts.system, store: false,
+    ...settings, instructions: opts.system, store: false,
     max_output_tokens: opts.maxTokens ?? 16_000,
     input: [{ role: "user", content }], text: { format: zodTextFormat(opts.schema, "easyapply_result") },
   }, { signal }).finalResponse();
   if (response.output.some((o) => o.type === "message" && o.content.some((c) => c.type === "refusal"))) throw new AppError("refusal", "AI가 이 문서를 분석하지 못했어요. 다른 공고문으로 시도해 주세요.", 422);
   if (response.status !== "completed") throw new AppError("incomplete", "AI 분석이 끝나지 않았어요. 필요한 쪽만 나눠 다시 시도해 주세요.", 502);
-  console.info(JSON.stringify({ event: "ai_usage", provider: "openai", model: response.model, input_tokens: response.usage?.input_tokens, output_tokens: response.usage?.output_tokens }));
+  console.info(JSON.stringify({ event: "ai_usage", provider: "openai", model: response.model,
+    requested_reasoning_effort: settings.reasoning.effort, reasoning_effort: response.reasoning?.effort ?? null,
+    requested_service_tier: settings.service_tier, service_tier: response.service_tier ?? null,
+    input_tokens: response.usage?.input_tokens, output_tokens: response.usage?.output_tokens,
+    reasoning_tokens: response.usage?.output_tokens_details?.reasoning_tokens ?? null }));
   try { return JSON.parse(response.output_text); }
   catch { throw new AppError("bad_output", "AI 응답을 읽지 못했어요.", 502); }
 }
 
 async function viaApi(opts: Options, signal: AbortSignal, effort: Effort): Promise<unknown> {
+  const speed = process.env.EASYAPPLY_ANTHROPIC_SPEED || "standard";
+  if (speed !== "standard" && speed !== "fast") throw new AppError("configuration", "AI 처리 속도 설정을 확인해 주세요.", 503);
   const client = new Anthropic({ maxRetries: 0, timeout: 260_000 });
   const content: Anthropic.ContentBlockParam[] = [];
   for (const f of opts.files ?? []) {
@@ -106,17 +114,26 @@ async function viaApi(opts: Options, signal: AbortSignal, effort: Effort): Promi
   }
   content.push({ type: "text", text: opts.text });
   const message = await client.messages.stream({
-    model: MODEL, max_tokens: opts.maxTokens ?? 16_000,
-    system: opts.system, output_config: { effort, format: zodOutputFormat(opts.schema) },
+    model: MODEL, max_tokens: opts.maxTokens ?? 16_000, speed,
+    system: `${opts.system}\n\nReturn the complete final result by calling easyapply_result exactly once.`,
+    output_config: { effort },
+    // The full analysis exceeds Anthropic's strict grammar limit. Tool input
+    // preserves the same schema, with full Zod validation in runStructured.
+    tools: [{ name: "easyapply_result", description: "Return the complete analysis or eligibility result.", input_schema: toOutputSchema(opts.schema) as Anthropic.Tool.InputSchema }],
+    tool_choice: { type: "auto", disable_parallel_tool_use: true },
     messages: [{ role: "user", content }],
   }, { signal }).finalMessage();
   if (message.stop_reason === "refusal") throw new AppError("refusal", "AI가 이 문서를 분석하지 못했어요. 다른 공고문으로 시도해 주세요.", 422);
   if (message.stop_reason === "max_tokens") throw new AppError("too_long", "결과가 너무 길어 잘렸어요. 필요한 쪽만 나눠 올려 주세요.", 413);
-  if (message.stop_reason !== "end_turn") throw new AppError("bad_output", "AI 분석이 끝나지 않았어요. 다시 시도해 주세요.", 502);
-  const text = message.content.filter((b): b is Anthropic.TextBlock => b.type === "text").map((b) => b.text).join("");
-  console.info(JSON.stringify({ event: "ai_usage", provider: "api", model: message.model, input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens }));
-  try { return JSON.parse(text); }
-  catch { throw new AppError("bad_output", "AI 응답을 읽지 못했어요. 다시 시도해 주세요.", 502); }
+  if (message.stop_reason !== "tool_use") throw new AppError("bad_output", "AI 분석이 끝나지 않았어요. 다시 시도해 주세요.", 502);
+  const results = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "easyapply_result");
+  if (results.length !== 1) throw new AppError("bad_output", "AI 응답을 읽지 못했어요. 다시 시도해 주세요.", 502);
+  console.info(JSON.stringify({ event: "ai_usage", provider: "api", model: message.model,
+    requested_reasoning_effort: effort, requested_speed: speed, speed: message.usage.speed,
+    input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens,
+    output_tokens_details: message.usage.output_tokens_details,
+    cache_creation_input_tokens: message.usage.cache_creation_input_tokens, cache_read_input_tokens: message.usage.cache_read_input_tokens }));
+  return results[0].input;
 }
 
 export function mapApiError(e: unknown): AppError {

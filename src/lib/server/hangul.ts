@@ -6,13 +6,13 @@ import { AppError } from "./errors";
 
 export async function extractHangul(file: InputFile, signal: AbortSignal) {
   const format = file.mediaType === "application/x-hwp" ? "hwp" : "hwpx";
-  const result = await new Promise<{ sections: string[]; images: number }>((resolve, reject) => {
+  const result = await new Promise<{ sections: string[]; images: number; uncertainLayout: boolean }>((resolve, reject) => {
     const worker = new Worker(path.join(process.cwd(), "server/hangul-worker.cjs"), {
       workerData: { bytes: new Uint8Array(file.data), format },
       resourceLimits: { maxOldGenerationSizeMb: 128, maxYoungGenerationSizeMb: 32, stackSizeMb: 4 },
     });
     let settled = false;
-    const finish = (error?: AppError, value?: { sections: string[]; images: number }) => {
+    const finish = (error?: AppError, value?: { sections: string[]; images: number; uncertainLayout: boolean }) => {
       if (settled) return; settled = true;
       clearTimeout(timer); signal.removeEventListener("abort", abort);
       void worker.terminate();
@@ -42,6 +42,6 @@ export async function extractHangul(file: InputFile, signal: AbortSignal) {
     // These are extraction sections, never purported to be physical pages.
     for (let at = 0; at < text.length; at += 12_000) sections.push({ page: sections.length + 1, text: text.slice(at, at + 12_000) });
   }
-  const warning = `${format.toUpperCase()}에서 추출한 본문이에요. 구역 번호는 실제 쪽수와 다릅니다. ${format === "hwp" ? "표의 셀 관계와 배치는 보존되지 않을 수 있어요. " : ""}${result.images ? "포함된 이미지·도형의 글자는 추출하지 않았어요. " : ""}복잡한 표·스캔·도장이 중요하면 PDF로 저장해 다시 분석해 주세요.`;
-  return { sections, warning, index: buildIndex(sections.map((s) => ({ page: s.page, items: s.text.split("\n") })), "extracted"), uncertainLayout: format === "hwp" || result.images > 0 };
+  const warning = `${format.toUpperCase()}에서 추출한 본문이에요. 구역 번호는 실제 쪽수와 다릅니다. ${format === "hwp" || result.uncertainLayout ? "표의 셀 관계와 배치는 보존되지 않을 수 있어요. " : ""}${result.images ? "포함된 이미지·도형의 글자는 추출하지 않았어요. " : ""}복잡한 표·스캔·도장이 중요하면 PDF로 저장해 다시 분석해 주세요.`;
+  return { sections, warning, index: buildIndex(sections.map((s) => ({ page: s.page, items: s.text.split("\n") })), "extracted"), uncertainLayout: format === "hwp" || result.images > 0 || result.uncertainLayout };
 }

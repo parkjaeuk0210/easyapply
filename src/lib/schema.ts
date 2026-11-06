@@ -30,6 +30,7 @@ export const AnalysisSchema = z.object({
       date_iso: date(),
       time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).nullable(),
       is_deadline: z.boolean(),
+      is_application_deadline: z.boolean().prefault(false),
       ...withEvidence,
     }),
   ).max(50),
@@ -71,6 +72,7 @@ export const AnalysisSchema = z.object({
     }),
   ).max(8),
   contact: text().nullable(),
+  contact_evidence: z.array(EvidenceSchema).max(10).prefault([]),
   reading_notes: text().nullable(),
   transcript: z.array(z.object({ page: z.number().int().min(1).max(100), text: z.string().max(30_000) })).max(100),
 });
@@ -84,8 +86,14 @@ export const MatchSchema = z.object({
       status: z.enum(["met", "not_met", "check"]),
       reason: text(),
       how_to_check: text().nullable(),
+      failed_answer_ids: z.array(id()).max(8).prefault([]),
     }),
   ).max(80),
+  next_searches: z.array(z.object({
+    criterion_id: id(),
+    advice: text(),
+    query: label(),
+  })).max(8).prefault([]),
   checklist: z.array(
     z.object({
       id: id(),

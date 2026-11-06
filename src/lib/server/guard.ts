@@ -3,6 +3,7 @@ import { AppError } from "./errors";
 import { configurationIssues, intEnv, isHosted, isProduction, redisConfig } from "./config";
 import { assertOrigin } from "./http";
 import { privateKey, requireSession } from "./tokens";
+import { MAX_UPLOAD_BYTES } from "../limits";
 
 type Counter = { count: number; expires: number };
 type Lease = { id: string; session: string; expires: number };
@@ -74,6 +75,48 @@ export async function limitAttempts(req: Request, kind = "request", limit = 40) 
     count = c.count; ttl = c.expires - Date.now();
   }
   if (count > limit) throw new AppError("rate_limit", "요청이 많아요. 잠시 후 다시 시도해 주세요.", 429, Math.max(1, Math.ceil(ttl / 1000)));
+}
+
+// Never refund issued capacity: failed/abandoned grants may still be usable.
+// 1,000 objects/day leaves room in the 5,000-file cleanup.
+const UPLOAD_BYTES = [100 * MAX_UPLOAD_BYTES, 10 * MAX_UPLOAD_BYTES, 10 * MAX_UPLOAD_BYTES];
+const UPLOAD_FILES = [1000, 100, 100];
+const UPLOAD_BUDGET_SCRIPT = `
+for i=1,#KEYS do
+  if tonumber(redis.call('GET', KEYS[i]) or '0') + tonumber(ARGV[i]) > tonumber(ARGV[#KEYS+i]) then
+    return {1, redis.call('PTTL', KEYS[i])}
+  end
+end
+for i=1,#KEYS do
+  local n = redis.call('INCRBY', KEYS[i], ARGV[i])
+  if n == tonumber(ARGV[i]) then redis.call('PEXPIRE', KEYS[i], ARGV[2*#KEYS+1]) end
+end
+return {0, 0}`;
+
+export async function reserveUploadBudget(req: Request, sessionId: string, bytes: number, files: number) {
+  if (!Number.isSafeInteger(bytes) || bytes <= 0 || bytes > MAX_UPLOAD_BYTES || !Number.isInteger(files) || files < 1 || files > 10) {
+    throw new AppError("invalid_input", "파일 정보나 용량이 올바르지 않아요.", 400);
+  }
+  const scopes = ["global", `ip:${identity(req)}`, `session:${sessionId}`];
+  const keys = ["bytes", "files"].flatMap(unit => scopes.map(scope => `easyapply:v1:upload:${unit}:${scope}`));
+  const increments = [bytes, bytes, bytes, files, files, files];
+  const limits = [...UPLOAD_BYTES, ...UPLOAD_FILES], ttl = 86_400_000;
+  let result: number[];
+  if (remote()) {
+    const r = await redis(["EVAL", UPLOAD_BUDGET_SCRIPT, keys.length, ...keys, ...increments, ...limits, ttl]);
+    if (!Array.isArray(r) || r.length !== 2 || !r.every(Number.isFinite)) throw new AppError("rate_limit_unavailable", "요청량 확인에 실패했어요.", 503);
+    result = r;
+  } else {
+    const now = Date.now(); prune(now);
+    const counters = local().counters;
+    const blocked = keys.findIndex((key, i) => (counters.get(key)?.count ?? 0) + increments[i] > limits[i]);
+    result = blocked < 0 ? [0, 0] : [1, (counters.get(keys[blocked])?.expires ?? now + ttl) - now];
+    if (!result[0]) for (let i = 0; i < keys.length; i++) {
+      const counter = counters.get(keys[i]) ?? { count: 0, expires: now + ttl };
+      counter.count += increments[i]; counters.set(keys[i], counter);
+    }
+  }
+  if (result[0]) throw new AppError("upload_limit", "오늘의 파일 업로드 한도에 도달했어요. 나중에 다시 시도해 주세요.", 429, Math.max(1, Math.ceil(result[1] / 1000)));
 }
 
 // The entire quota + concurrency reservation is atomic across server instances.

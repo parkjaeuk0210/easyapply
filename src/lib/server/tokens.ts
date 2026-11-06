@@ -64,3 +64,15 @@ export function verifyAnalysis(analysis: Analysis, token: string, sessionId: str
   }
   return Array.isArray(p.unchecked) ? p.unchecked.filter((v): v is string => typeof v === "string") : [];
 }
+
+export function signUpload(files: unknown, sessionId: string) {
+  return sign({ kind: "upload", sid: sessionId, files, exp: Date.now() + 30 * 60_000 });
+}
+
+export function verifyUpload(token: string, sessionId: string): unknown {
+  const payload = verify(token);
+  if (payload?.kind !== "upload" || payload.sid !== sessionId) {
+    throw new AppError("upload_expired", "업로드가 만료됐거나 다른 이용자의 파일이에요. 파일을 다시 선택해 주세요.", 409);
+  }
+  return payload.files;
+}
