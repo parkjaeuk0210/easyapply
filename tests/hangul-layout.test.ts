@@ -69,9 +69,9 @@ test('HWPX unknown or incomplete cell spans require layout verification', async 
   }
 });
 
-test('HWPX images are disclosed but no longer block verification of an ordinary table', async () => {
+test('HWPX images require verification even when the text table is ordinary', async () => {
   const result = await extract('rowSpan="1" colSpan="1"', true);
-  assert.equal(result.uncertainLayout, false);
+  assert.equal(result.uncertainLayout, true);
   assert.match(result.warning, /이미지·도형의 글자는 추출하지 않았/);
   assert.doesNotMatch(result.warning, /표의 셀 관계/);
 });

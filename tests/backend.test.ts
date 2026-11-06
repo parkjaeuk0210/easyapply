@@ -66,7 +66,9 @@ test('preference failure does not disqualify; a missing model criterion becomes 
 });
 test('expired applications replace document and submission tasks with a reopening check', () => {
   const a=analysis(), m=match(); m.checklist=[];
-  a.schedule.forEach(s => { s.is_application_deadline = s.is_deadline; });
+  // This case has only confirmed application ends. An unclassified start-only row
+  // cannot establish that every recruitment round ended (review 3).
+  a.schedule = a.schedule.filter(s => s.is_deadline).map(s => ({ ...s, is_application_deadline: true }));
   const r=finalizeMatch(a,demo.answers,m,[],new Date('2030-01-01'));
   assert.match(r.overall_message,/마감일이 모두 지났/);
   assert(r.checklist.some(t=>t.title==='추가 모집 여부 확인'));

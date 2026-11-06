@@ -38,7 +38,7 @@ export function shortDate(iso: string | null | undefined) {
 }
 
 export function applicationDeadlines(a: Analysis) {
-  return a.schedule.filter((s) => s.is_deadline && s.is_application_deadline);
+  return a.schedule.filter((s) => s.is_deadline && s.is_application_deadline && !OPEN_ENDED.test(`${s.label} ${s.date_text}`));
 }
 
 type Dated = { date_iso: string | null; time: string | null };
@@ -195,13 +195,14 @@ export function parseKoreanDates(text: string): DateMention[] {
 
 type Entry = Analysis["schedule"][number];
 const APPLY_WORDS = /접수|신청|모집|지원/;
-const END_WORDS = /마감|기간|까지/;
+const END_WORDS = /마감|종료|까지/;
+const OPEN_ENDED = /상시|수시|예산\s*소진/;
 const LATER_STAGE = /발표|지급|결과|선정|합격|면접|교육|이의|보완|정산|활동|협약|사업\s*기간|지원\s*기간/;
 
 /** 이름·표기로 보아 처음 신청하는 사람의 접수 기간·마감으로 보이는 일정인지. */
-function looksLikeApplication(s: Entry) {
+export function looksLikeApplication(s: Entry) {
   const text = `${s.label} ${s.date_text}`;
-  return APPLY_WORDS.test(text) && END_WORDS.test(text) && !LATER_STAGE.test(text);
+  return APPLY_WORDS.test(text) && !LATER_STAGE.test(text);
 }
 
 const weekdayOf = (iso: string) => parseISO(iso)!.getUTCDay();
@@ -216,6 +217,9 @@ function reconcileEntry(s: Entry, years: Set<number>, thisYear: number) {
   };
   const fromText = parseKoreanDates(s.date_text);
   const mentions = fromText.length ? fromText : s.evidence.flatMap((e) => parseKoreanDates(e.quote));
+  const deadlineLike = s.is_deadline || s.is_application_deadline || looksLikeApplication(s);
+  // Separate end dates in one entry cannot establish which recruitment round is closed.
+  if (deadlineLike && new Set(mentions.filter((x) => !x.rangeEnd).map((x) => `${x.year}-${x.month}-${x.day}`)).size > 1) return uncertain();
   const [y, m, d] = s.date_iso.split("-").map(Number);
   let hit = mentions.find((x) => x.month === m && x.day === d && (x.year === null || x.year === y));
   let year = y;
@@ -229,7 +233,6 @@ function reconcileEntry(s: Entry, years: Set<number>, thisYear: number) {
   }
   // 연도가 원문에 없으면 같은 공고의 다른 날짜·제목에 나온 연도이거나, 적힌 요일이 맞는 올해 앞뒤 해일 때만 믿는다(요일은 아래에서 대조).
   if (hit.year === null && !years.has(year) && !(hit.weekday !== null && Math.abs(year - thisYear) <= 1)) return uncertain();
-  const deadlineLike = s.is_deadline || s.is_application_deadline || looksLikeApplication(s);
   let target = hit;
   if (deadlineLike && hit.rangeEnd) target = hit.rangeEnd;
   const targetYear = target === hit ? year : target.year ?? year + (target.month < hit.month ? 1 : 0);
@@ -249,7 +252,7 @@ function reconcileEntry(s: Entry, years: Set<number>, thisYear: number) {
  * 모델이 채운 date_iso·time을 date_text(없으면 인용)의 날짜와 대조해 고친다. 제자리 수정이며 여러 번 불러도 같다.
  * - 월·일·요일·연도가 맞지 않으면 date_iso를 비우고 date_uncertain=true
  * - 마감의 기간 표기는 끝 날짜로, 자정·24:00은 그날 23:59로
- * - 접수 마감 플래그가 하나도 없으면 접수·신청·모집 기간 중 가장 늦은 일정을 접수 마감으로 추정(deadline_inferred=true)
+ * - 종료 표기나 날짜 범위가 명확한 접수 일정만 회차별로 추정(deadline_inferred=true)
  */
 export function reconcileDates(a: Analysis) {
   const years = new Set<number>();
@@ -259,13 +262,14 @@ export function reconcileDates(a: Analysis) {
   }
   const thisYear = Number(todayLocalISO().slice(0, 4));
   for (const s of a.schedule) reconcileEntry(s, years, thisYear);
-  if (a.schedule.some((s) => s.is_application_deadline)) return;
-  const candidates = a.schedule.filter((s) => deadlineEnd(s) && looksLikeApplication(s));
-  if (!candidates.length) return;
-  const last = candidates.reduce((x, y) => (deadlineEnd(y)!.getTime() > deadlineEnd(x)!.getTime() ? y : x));
-  last.is_deadline = true;
-  last.is_application_deadline = true;
-  last.deadline_inferred = true;
+  for (const s of a.schedule) {
+    if (s.is_application_deadline || !deadlineEnd(s) || !looksLikeApplication(s)) continue;
+    const text = `${s.label} ${s.date_text}`;
+    if (OPEN_ENDED.test(text) || (!END_WORDS.test(text) && !parseKoreanDates(s.date_text).some((d) => d.rangeEnd))) continue;
+    s.is_deadline = true;
+    s.is_application_deadline = true;
+    s.deadline_inferred = true;
+  }
 }
 
 // ── 캘린더(.ics) 내보내기 ────────────────────────────────────────

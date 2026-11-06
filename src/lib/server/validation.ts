@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { MatchSchema, type Analysis, type Answers, type Criterion, type Match, type ProfileQuestion } from "../schema";
 import { AppError } from "./errors";
-import { applicationDeadlines, deadlineEnd, deadlinePassed, kstISO, parseKoreanDates, reconcileDates } from "../dates";
+import { applicationDeadlines, deadlineEnd, deadlinePassed, kstISO, looksLikeApplication, parseKoreanDates, reconcileDates } from "../dates";
 
 const invalidOutput = () => new AppError("bad_output", "AI 결과에 누락되거나 서로 맞지 않는 정보가 있어요. 다시 분석해 주세요.", 502);
 function unique(values: (string | number)[]) { return new Set(values).size === values.length; }
@@ -36,7 +36,7 @@ export function validateAnswers(a: Analysis, answers: Answers): Answers {
     // 생년월일은 오늘 이후일 수 없다. 전역 예정일 같은 다른 날짜 질문은 미래를 허용한다.
     const latest = BIRTH.test(q.label) ? kstISO(new Date()) : "2100-12-31";
     if (q.input === "date" && (!z.iso.date().safeParse(value).success || value < "1900-01-01" || value > latest)) throw bad();
-    if (q.input === "number" && (!/^\d+(?:\.\d+)?$/.test(value) || !Number.isFinite(Number(value)))) throw bad();
+    if (q.input === "number" && (!/^-?\d+(?:\.\d+)?$/.test(value) || !Number.isFinite(Number(value)))) throw bad();
     if (q.input === "yes_no" && !["예", "아니오"].includes(value)) throw bad();
     if (q.input === "select" && !q.options.includes(value)) throw bad();
     if (q.input === "multi") {
@@ -100,7 +100,7 @@ function ageBaseDates(a: Analysis, text: string, now: Date): string[] | null {
 }
 
 /**
- * 생년월일 답변이 있으면 만 나이를 서버가 계산한다. 기준일 후보마다 결과가 같고 모델과 다르면 서버 계산을 따른다.
+ * 생년월일 계산은 확인 필요 또는 미충족으로 내릴 때만 쓴다. 복합 조건을 충족으로 올리지 않는다.
  * 예외·연장 문구가 있거나 기준일에 따라 결과가 갈리면 check. 나이 조건을 뽑지 못하면 그대로 둔다.
  */
 function judgeAge(a: Analysis, e: Criterion, related: ProfileQuestion[], answers: Answers, c: Judged, now: Date): Judged {
@@ -118,22 +118,27 @@ function judgeAge(a: Analysis, e: Criterion, related: ProfileQuestion[], answers
   const ages = bases.map((base) => fullAge(birth, base));
   if (ages.some((age) => age < 0)) return c;
   if (ages.some((age) => ok(age) !== ok(ages[0]))) return toCheck(c, "기준일에 따라 만 나이 판정이 달라질 수 있어 확인이 필요해요.");
-  const status = ok(ages[0]) ? "met" : "not_met";
-  if (status === c.status) return status === "not_met" && !c.failed_answer_ids?.length ? { ...c, failed_answer_ids: [births[0].id] } : c;
+  if (ok(ages[0])) return c;
+  if (c.status === "not_met" && c.failed_answer_ids.length) return c;
   if (AGE_EXCEPTION.test(text)) return toCheck(c, `생년월일 기준 만 ${ages[0]}세로 계산되지만 예외·연장 조건이 있어 확인이 필요해요.`);
   const limit = [bounds.min && `만 ${bounds.min.age}세 ${bounds.min.inclusive ? "이상" : "초과"}`, bounds.max && `만 ${bounds.max.age}세 ${bounds.max.inclusive ? "이하" : "미만"}`].filter(Boolean).join(" ");
-  return { ...c, status, failed_answer_ids: status === "not_met" ? [births[0].id] : [],
+  return { ...c, status: "not_met", failed_answer_ids: [births[0].id],
     reason: `생년월일 기준 만 ${ages[0]}세(${bases[0]} 기준)예요. 공고 기준은 ${limit}이에요.` };
 }
 
 /**
- * 모델 출력의 사소한 이탈은 받아 주고(빠진 조건은 check로 보충, 모르는 id·중복은 버림),
+ * 모델 출력의 사소한 이탈은 받아 주고(빠진 조건은 check로 보충, 모르는 id는 버림, 상충하는 중복은 check),
  * 근거가 부족한 결론은 check로 내린다. 접수 마감과 서류 일정은 서버가 정한다.
  */
 export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unverifiedCriteria: string[] = [], now = new Date()): Match {
   const docIds = new Set(a.documents.map((d) => d.id));
   const judged = new Map<string, Judged>();
-  for (const c of match.criteria) if (!judged.has(c.criterion_id)) judged.set(c.criterion_id, c);
+  for (const c of match.criteria) {
+    const prior = judged.get(c.criterion_id);
+    const same = prior && prior.status === c.status && prior.reason === c.reason && prior.how_to_check === c.how_to_check &&
+      JSON.stringify(prior.failed_answer_ids) === JSON.stringify(c.failed_answer_ids);
+    judged.set(c.criterion_id, !prior || same ? c : toCheck(prior, "같은 조건의 판정이나 근거가 서로 달라 확인이 필요해요."));
+  }
   const answered = (id: string) => !!answers[id]?.trim() && !unsure(answers[id]);
 
   const criteria = a.eligibility.map((e): Judged => {
@@ -146,7 +151,7 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
     const unanswered = !related.length || related.some((q) => !answered(q.id));
     const text = [e.requirement, e.detail ?? "", ...e.evidence.map((x) => x.quote)].join("\n");
     if (c.status === "check") return c;
-    if (unverifiedCriteria.includes(e.id)) return toCheck(c, "이 조건의 원문 근거나 표 구조를 자동으로 확인하지 못했어요.");
+    if (!e.evidence.length || e.evidence.some((x) => x.quote.trim().length < 2) || unverifiedCriteria.includes(e.id)) return toCheck(c, "이 조건의 원문 근거나 표 구조를 자동으로 확인하지 못했어요.");
     if (c.status === "met") return unanswered ? toCheck(c, NEED_ANSWER) : c;
     // 탈락은 이 조건에 연결된, 실제로 답한 질문을 근거로 댈 때만 인정한다. 제외 조건에 '해당 없음'이라 답한 것은 근거가 아니다.
     const supports = (id: string) => answered(id) && !(e.kind === "exclusion" && /^해당\s*없음$/.test(answers[id].trim()));
@@ -165,13 +170,15 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
     likely_eligible: "입력한 정보로는 필수 자격과 제외 조건을 충족할 가능성이 있어요. 최종 자격은 기관 심사로 결정돼요.",
   };
   const deadlines = applicationDeadlines(a);
-  const expired = deadlines.length > 0 && deadlines.every((s) => deadlinePassed(s, now));
+  const periods = a.schedule.filter((s) => s.is_application_deadline || looksLikeApplication(s));
+  const unconfirmed = periods.some((s) => !deadlines.includes(s) || !deadlineEnd(s));
+  const expired = deadlines.length > 0 && !unconfirmed && deadlines.every((s) => deadlinePassed(s, now));
   // 접수 마감이 있는데 날짜를 확정하지 못했고 열려 있는 회차도 없으면 '가능'을 확정하지 않는다.
-  const unclear = !expired && deadlines.some((s) => !s.date_iso) && !deadlines.some((s) => deadlineEnd(s) && !deadlinePassed(s, now));
+  const unclear = !expired && deadlines.length > 0 && unconfirmed && !deadlines.some((s) => deadlineEnd(s) && !deadlinePassed(s, now));
   // Meeting personal criteria does not reopen an expired (or unconfirmed) application period.
   const heldBack = (expired || unclear) && overall === "likely_eligible";
   if (heldBack) overall = "needs_check";
-  const lastDay = deadlines.flatMap((s) => s.date_iso ? [s.date_iso] : []).sort().at(-1);
+  const lastDay = unconfirmed ? undefined : deadlines.flatMap((s) => s.date_iso ? [s.date_iso] : []).sort().at(-1);
   const ids = new Set<string>();
   const checklist = match.checklist.map((t) => {
     let id = t.id;
