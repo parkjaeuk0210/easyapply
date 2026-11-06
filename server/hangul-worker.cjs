@@ -45,36 +45,87 @@ function fail(message) { throw new Error(message); }
       const data = compressed ? inflateRawSync(raw, { maxOutputLength: MAX }) : raw;
       total += data.length; if (total > 32 * 1024 * 1024) fail('too_long');
       const lines = [];
-      let at = 0;
+      let at = 0, table = null, pendingText = 0;
+      const closeTable = () => {
+        if (table && (!table.expected || table.cells !== table.expected || table.paragraphs)) uncertainLayout = true;
+        table = null;
+      };
       while (at < data.length) {
         if (at + 4 > data.length) fail('invalid');
         const h = data.readUInt32LE(at); at += 4;
-        const tag = h & 1023;
+        const tag = h & 1023, level = (h >>> 10) & 1023;
         let length = h >>> 20;
         if (length === 4095) { if (at + 4 > data.length) fail('invalid'); length = data.readUInt32LE(at); at += 4; }
         if (at + length > data.length) fail('invalid');
-        // HWPTAG_TABLE: table cells are flattened into separate lines, so their relations are lost.
-        if (tag === 77) uncertainLayout = true;
+        const record = data.subarray(at, at + length);
+        if (level < 2) closeTable();
+        // Only top-level inline tables with a complete, already row-major grid are safe.
+        // Unsupported shapes/equations may contain text absent from PARA_TEXT.
+        if (tag < 66 || tag > 77 || tag === 76) uncertainLayout = true;
+        if (tag === 71) {
+          const id = record.toString('latin1', 0, 4);
+          if (id === ' lbt') {
+            if (level !== 1 || length < 44 || !(record.readUInt32LE(4) & 1)) uncertainLayout = true;
+            if (level === 1) table = { expected: 0, cols: 0, cells: 0, paragraphs: 0 };
+          } else if (!['dces', 'dloc', 'pngp', 'dhgp', 'tcgp', 'onta', 'onwn', 'klh%'].includes(id)) uncertainLayout = true;
+          if (id === 'dces' && (length < 8 || (record.readUInt32LE(4) & 0x70000))) uncertainLayout = true;
+        }
+        if (tag === 77) {
+          if (!table || level !== 2 || table.expected || length < 22) uncertainLayout = true;
+          else {
+            const rows = record.readUInt16LE(4), cols = record.readUInt16LE(6);
+            table.expected = rows * cols; table.cols = cols;
+            if (!rows || !cols || length < 22 + rows * 2) uncertainLayout = true;
+            else for (let row = 0; row < rows; row++) if (record.readUInt16LE(18 + row * 2) !== cols) uncertainLayout = true;
+          }
+        }
+        if (tag === 72) {
+          // Real HWP5 LIST_HEADER has 8 bytes (including the reserved uint16), then cell attributes.
+          if (!table || !table.expected || level !== 2 || length < 34) uncertainLayout = true;
+          else {
+            const col = record.readUInt16LE(8), row = record.readUInt16LE(10);
+            if ((record.readUInt32LE(4) & 7) || record.readUInt16LE(12) !== 1 || record.readUInt16LE(14) !== 1 ||
+                col !== table.cells % table.cols || row !== Math.floor(table.cells / table.cols) || table.paragraphs) uncertainLayout = true;
+            table.cells++; table.paragraphs = record.readUInt16LE(0);
+            if (!table.paragraphs) uncertainLayout = true;
+          }
+        }
+        if (tag === 66 && length < 4) fail('invalid');
+        if (tag === 66 || tag === 72) {
+          if (pendingText > 1) uncertainLayout = true; // A declared nonempty paragraph lost its text record.
+          pendingText = tag === 66 ? record.readUInt32LE(0) & 0x7fffffff : 0;
+        }
+        if (tag === 66 && table && level === 2 && --table.paragraphs < 0) uncertainLayout = true;
         if (tag === 67) {
+          if (pendingText !== length / 2) uncertainLayout = true;
+          pendingText = 0;
           const para = data.subarray(at, at + length);
           if (para.length % 2) fail('invalid');
-          let s = '';
+          let s = '', tableAnchor = false;
           for (let i = 0; i < para.length;) {
             const ch = para.readUInt16LE(i); i += 2;
             if (ch >= 32) { if (ch !== 65535 && ch !== 65534) s += String.fromCharCode(ch); }
             else if (ch === 10 || ch === 13) s += '\n';
             else if ([0, 24, 25, 30, 31].includes(ch)) { if (ch) s += ' '; }
-            else { if (i + 14 > para.length) fail('invalid'); if (ch === 9) s += '\t'; i += 14; }
+            else {
+              if (i + 14 > para.length) fail('invalid');
+              if (ch === 11 && para.toString('latin1', i, i + 4) === ' lbt') tableAnchor = true;
+              if (ch === 9) s += '\t'; i += 14;
+            }
           }
+          if (tableAnchor && s.trim()) uncertainLayout = true; // Inline surrounding text would be reordered.
           if (s.trim()) lines.push(s.trim());
         }
         at += length;
       }
+      if (pendingText > 1) uncertainLayout = true;
+      closeTable();
       sections.push(lines.join('\n'));
     }
     if (cfb.exists(`BodyText/Section${sectionCount}`)) fail('invalid');
     if (!sections.length) fail('no_text'); // Never fall back to the truncated PrvText stream.
     images = cfb.exists('BinData') ? 1 : 0;
+    if (images) uncertainLayout = true; // Image/background text cannot be ruled out without OCR.
   } else {
     // Read the central directory first, reject zip bombs before decompression.
     let end = -1;
