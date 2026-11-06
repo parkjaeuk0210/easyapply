@@ -99,6 +99,7 @@ export function verifyEvidence(a: Analysis, index: TextIndex | null) {
   const statusOn = (page: TextIndex["pages"][number] | undefined, quote: string) =>
     !page || page.norm.length < 20 ? null : locate({ ...index!, pages: [page], hasText: true }, page.page, quote).status;
   const check = (e: Evidence): keyof typeof counts => {
+    if (e.quote.trim().length < 2) return "unverified";
     const own = statusOn(index?.pages.find((p) => p.page === e.page), e.quote);
     if (own === "exact") return "exact";
     const near = index?.pages.find((p) => Math.abs(p.page - e.page) === 1 && statusOn(p, e.quote) === "exact");

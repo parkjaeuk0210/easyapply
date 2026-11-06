@@ -58,7 +58,7 @@ test('B1: a missing application flag no longer hides the closed Hwaseong period'
   assert.match(r.overall_message, /마감일이 모두 지났/);
 });
 
-test('B1: the latest application-like schedule is inferred, follow-up stages are not', () => {
+test('B1: bounded application schedules are inferred per round, follow-up stages are not', () => {
   const a = AnalysisSchema.parse(structuredClone(sample.analysis));
   validateAnalysis(a, 2);
   assert.deepEqual(a.schedule.filter((s) => s.is_application_deadline).map((s) => [s.label, s.date_iso, s.time, s.deadline_inferred]), [['신청 마감', '2026-12-04', '18:00', true]]);
@@ -69,7 +69,11 @@ test('B1: the latest application-like schedule is inferred, follow-up stages are
   const flagged = base();
   flagged.schedule = [entry('신청 접수 마감', '2026. 11. 30.', '2026-11-30', { is_deadline: true, is_application_deadline: true }), entry('추가 모집 기간', '2026. 12. 1. ~ 12. 10.', '2026-12-10')];
   validateAnalysis(flagged, 1);
-  assert.deepEqual(flagged.schedule.map((s) => s.deadline_inferred), [false, false], 'explicit flags are never second-guessed');
+  // An explicit first round must not hide a separately bounded later round.
+  assert.deepEqual(flagged.schedule.map((s) => s.deadline_inferred), [false, true]);
+  const r = finalizeMatch(flagged, { q1: '25' }, model({ c1: 'met' }), [], kst('2026-12-05T12:00:00'));
+  assert.equal(r.overall, 'likely_eligible');
+  assert.doesNotMatch(r.overall_message, /마감일이 모두 지났/);
 });
 
 // ── B2 date_iso ↔ 원문 대조 ──────────────────────────────────────
@@ -258,7 +262,9 @@ test('B4: free-text unknown answers are uncertain and impossible answers are rej
   for (const bad of ['2031-01-01', '1800-01-01']) assert.throws(() => validateAnswers(d, { q1: bad }), bad);
   assert.doesNotThrow(() => validateAnswers(d, { q1: '1999-03-15' }));
   const n = base();
-  assert.throws(() => validateAnswers(n, { q1: '-5' }));
+  // Generic numeric validation cannot infer a domain's lower bound from its input type.
+  n.profile_questions[0].label = '지난해 영업이익(만원)';
+  assert.deepEqual(validateAnswers(n, { q1: '-100' }), { q1: '-100' });
   assert.doesNotThrow(() => validateAnswers(n, { q1: '0.5' }));
 });
 
@@ -290,8 +296,9 @@ test('B5: the server computes full age when the model contradicts it', () => {
   assert.match(old.criteria[0].reason, /생년월일 기준 만 41세/);
   assert.equal(old.overall, 'likely_ineligible');
   const young = finalizeMatch(a, { q1: '1999-03-15' }, model({ c1: 'not_met' }, { c1: ['q1'] }), [], NOW);
-  assert.equal(young.criteria[0].status, 'met');
-  assert.match(young.criteria[0].reason, /생년월일 기준 만 27세/);
+  // A passing age calculation cannot prove the other parts of a composite criterion.
+  assert.equal(young.criteria[0].status, 'not_met');
+  assert.equal(young.criteria[0].reason, '모델 판정');
   const agreeing = finalizeMatch(a, { q1: '1985-03-01' }, model({ c1: 'not_met' }), [], NOW);
   assert.equal(agreeing.criteria[0].status, 'not_met', 'an agreeing server result supplies the missing evidence');
 });
@@ -335,9 +342,9 @@ const BODY = '청년 주거 지원사업의 신청 대상은 만 19세 이상 34
 const hpf = (ids: string[], prefix = 'Contents/') => `<opf:package xmlns:opf="http://www.idpf.org/2007/opf"><opf:manifest><opf:item id="header" href="${prefix}header.xml"/>${ids.map((id) => `<opf:item id="${id}" href="${prefix}${id}.xml"/>`).join('')}</opf:manifest><opf:spine><opf:itemref idref="header"/>${ids.map((id) => `<opf:itemref idref="${id}"/>`).join('')}</opf:spine></opf:package>`;
 const hwpx = (data: Buffer) => extractHangul({ name: 'notice.hwpx', mediaType: 'application/hwp+zip', data }, new AbortController().signal);
 
-test('B6: one logo image no longer marks every HWPX criterion unverified', async () => {
+test('B6: every HWPX image keeps source verification on hold', async () => {
   const r = await hwpx(zip({ 'Contents/section0.xml': section(BODY), 'BinData/image1.png': 'logo' }));
-  assert.equal(r.uncertainLayout, false);
+  assert.equal(r.uncertainLayout, true);
   assert.match(r.warning, /이미지·도형의 글자는 추출하지 않았/);
 });
 
@@ -416,4 +423,97 @@ test('B8: a failure of a condition that applies only to some applicants stays at
   assert.match(r.criteria[1].reason, /제약기업 지원자/);
   assert.equal(r.overall, 'needs_check');
   assert.equal(AnalysisSchema.parse(structuredClone(sample.analysis)).eligibility[0].applies_to, null);
+});
+
+test('review 1: passing age never overwrites a failed residence answer in the same criterion', () => {
+  const a = ageAnalysis('2026-11-07 기준 만 19~34세이며 서울시 거주자');
+  a.profile_questions.push({ id: 'q2', label: '서울시에 거주하나요?', input: 'yes_no', options: [], unit: null, help: null, criteria_ids: ['c1'] });
+  validateAnalysis(a, 1);
+  const m = model({ c1: 'not_met' }, { c1: ['q2'] });
+  m.criteria[0].reason = '서울 거주 질문에 아니오라고 답했어요.';
+  const r = finalizeMatch(a, validateAnswers(a, { q1: '2000-01-01', q2: '아니오' }), m, [], NOW);
+  assert.equal(r.overall, 'likely_ineligible');
+  assert.equal(r.criteria[0].status, 'not_met');
+  assert.deepEqual(r.criteria[0].failed_answer_ids, ['q2']);
+  assert.equal(r.criteria[0].reason, m.criteria[0].reason);
+});
+
+test('review 3: open-ended recruitment and start-only dates never infer an application deadline', () => {
+  for (const text of ['2026. 1. 1.부터 상시 모집 (예산 소진 시까지)', '2026. 1. 1.부터 수시 모집', '2026. 1. 1.부터 예산 소진 시까지', '2026. 1. 1.부터', '2026. 1. 1. 시작']) {
+    const a = base();
+    a.schedule = [entry('신청 기간', text, '2026-01-01')];
+    const m = model({ c1: 'met' });
+    m.checklist = [{ id: 't1', title: '신청', kind: 'apply', detail: null, due_date_iso: null, document_id: null, priority: 'high' }];
+    validateAnalysis(a, 1);
+    validateAnalysis(a, 1);
+    assert.equal(a.schedule[0].deadline_inferred, false, text);
+    assert.equal(a.schedule[0].is_application_deadline, false, text);
+    const r = finalizeMatch(a, { q1: '25' }, m, [], NOW);
+    assert.doesNotMatch(r.overall_message, /마감일이 모두 지났/, text);
+    assert(r.checklist.some((t) => t.kind === 'apply'), text);
+  }
+});
+
+test('review 3: an expired first round cannot close an ongoing or unknown second round', () => {
+  for (const second of [entry('2차 상시 모집', '상시 모집', null), entry('2차 모집 기간', '2026. 11. 30.까지', '2026-11-30'), entry('2차 신청 기간', '2026. 11. 1.부터', '2026-11-01')]) {
+    const a = base();
+    a.schedule = [entry('1차 모집 마감', '2026. 5. 31. 종료', '2026-05-31', { is_deadline: true, is_application_deadline: true }), second];
+    const m = model({ c1: 'met' });
+    m.checklist = [{ id: 't1', title: '신청', kind: 'apply', detail: null, due_date_iso: '2026-11-30', document_id: null, priority: 'high' }];
+    validateAnalysis(a, 1);
+    const r = finalizeMatch(a, { q1: '25' }, m, [], NOW);
+    assert.doesNotMatch(r.overall_message, /마감일이 모두 지났/);
+    assert(!r.checklist.some((t) => t.id === 'verify_reopening'));
+    assert.equal(r.checklist.find((t) => t.kind === 'apply')?.due_date_iso, '2026-11-30');
+    assert.equal(r.overall, second.date_iso === '2026-11-30' ? 'likely_eligible' : 'needs_check');
+  }
+  const ended = base();
+  ended.schedule = [entry('1차 모집 마감', '2026. 5. 31. 종료', '2026-05-31', { is_deadline: true, is_application_deadline: true }), entry('2차 모집 기간', '2026. 6. 30.까지', '2026-06-30')];
+  validateAnalysis(ended, 1);
+  assert.match(finalizeMatch(ended, { q1: '25' }, model({ c1: 'met' }), [], NOW).overall_message, /마감일이 모두 지났/);
+});
+
+test('review 4: only identical criterion duplicates merge; differing status or evidence stays check in either order', () => {
+  const a = base();
+  a.eligibility[0].requirement = '서울시 거주자';
+  a.profile_questions[0] = { ...a.profile_questions[0], label: '서울 거주', input: 'yes_no', unit: null };
+  const m = model({ c1: 'met' });
+  const met = m.criteria[0];
+  const conflicts = [
+    { ...met, status: 'not_met' as const, reason: '서울 비거주', failed_answer_ids: ['q1'] },
+    { ...met, reason: '다른 근거' },
+    { ...met, failed_answer_ids: ['q1'] },
+    { ...met, how_to_check: '담당 기관 확인' },
+  ];
+  for (const conflict of conflicts) for (const criteria of [[met, conflict], [conflict, met], [met, conflict, met]]) {
+    const r = finalizeMatch(a, { q1: '아니오' }, { ...m, criteria }, [], NOW);
+    assert.equal(r.overall, 'needs_check');
+    assert.equal(r.criteria.length, 1);
+    assert.equal(r.criteria[0].status, 'check');
+    assert.deepEqual(r.criteria[0].failed_answer_ids, []);
+  }
+  const r = finalizeMatch(a, { q1: '예' }, { ...m, criteria: [met, structuredClone(met)] }, [], NOW);
+  assert.equal(r.criteria.length, 1);
+  assert.equal(r.overall, 'likely_eligible');
+});
+
+
+test('review 2: missing citations cannot become met even without a supplied verification list', () => {
+  for (const evidence of [[], [ev('')], [ev('   ')]]) {
+    const a = base(); a.eligibility[0].evidence = evidence;
+    validateAnalysis(a, 1);
+    const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }), [], NOW);
+    assert.equal(r.criteria[0].status, 'check');
+    assert.equal(r.overall, 'needs_check');
+  }
+});
+
+test('review 3: multiple round ends in one schedule entry cannot be closed using only the first end', () => {
+  const a = base();
+  a.schedule = [entry('신청 기간', '1차 2026. 5. 1. ~ 5. 31. / 2차 2026. 11. 1. ~ 11. 30.', '2026-05-31', { is_deadline: true, is_application_deadline: true })];
+  validateAnalysis(a, 1);
+  assert.equal(a.schedule[0].date_iso, null);
+  const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }), [], NOW);
+  assert.equal(r.overall, 'needs_check');
+  assert.doesNotMatch(r.overall_message, /마감일이 모두 지났/);
 });

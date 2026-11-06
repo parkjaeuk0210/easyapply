@@ -4,43 +4,57 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { AnalysisSchema, MatchSchema } from '../src/lib/schema';
 import { repairOutput } from '../src/lib/server/repair';
+import { validateAnalysis } from '../src/lib/server/validation';
 import { runStructured } from '../src/lib/llm';
 import sample from './fixtures/samples/garam-analysis.json';
 
 const analysis = () => AnalysisSchema.parse(structuredClone(sample.analysis));
 
-test('near-miss analysis output is repaired instead of failing the paid call', () => {
+test('repair only normalizes recognizable times and IDs without changing the input', () => {
   const raw = analysis();
   raw.schedule[0].time = '24:00';
-  raw.schedule[1].time = '오후 6시';
-  raw.profile_questions.push({ ...raw.profile_questions[0], id: 'q9' });
-  raw.benefits[0].evidence.unshift({ page: 1, quote: '' });
-  raw.eligibility[10].evidence = [{ page: 1, quote: ' ' }];
+  raw.schedule[1].time = '9:30';
   raw.eligibility[0].id = 'C1 ';
   raw.profile_questions[0].criteria_ids = ['C1'];
-  raw.how_to_apply[0].evidence[0].page = 7;
-  raw.profile_questions[1].options.push(raw.profile_questions[1].options[0]);
-  raw.summary[0] = '가'.repeat(5000);
-  assert.equal(AnalysisSchema.safeParse(raw).success, false);
-
-  const repaired = repairOutput(raw, AnalysisSchema, { pages: 2 });
-  const parsed = AnalysisSchema.safeParse(repaired.value);
-  assert(parsed.success, JSON.stringify(parsed.error?.issues.slice(0, 3)));
-  const a = parsed.data;
+  const repaired = repairOutput(raw, AnalysisSchema);
+  const a = AnalysisSchema.parse(repaired.value);
   assert.equal(a.schedule[0].time, '23:59');
-  assert.equal(a.schedule[1].time, null);
-  assert.equal(a.profile_questions.length, 8);
-  assert(a.benefits[0].evidence.every((e) => e.quote.length >= 2));
-  assert(!a.eligibility.some((c) => c.id === 'c11'));
-  assert.deepEqual(a.profile_questions.find((q) => q.id === 'q5')?.criteria_ids, ['c5']);
+  assert.equal(a.schedule[1].time, '09:30');
   assert.equal(a.eligibility[0].id, 'c1');
   assert.deepEqual(a.profile_questions[0].criteria_ids, ['c1']);
-  assert.equal(a.how_to_apply[0].evidence[0].page, 2);
-  assert.equal(new Set(a.profile_questions[1].options).size, a.profile_questions[1].options.length);
-  assert.equal(a.summary[0].length, 4000);
-  assert(repaired.repairs >= 9);
-  // The input object is not mutated.
+  assert.equal(repaired.repairs, 4);
+  validateAnalysis(a, 2);
   assert.equal(raw.schedule[0].time, '24:00');
+});
+
+test('repair preserves empty citations, criteria, questions, schedules and documents', () => {
+  const raw = analysis();
+  raw.eligibility[10].evidence = [{ page: 1, quote: ' ' }];
+  raw.schedule[0].evidence = [];
+  raw.documents[0].evidence = [{ page: 1, quote: '' }];
+  const repaired = repairOutput(raw, AnalysisSchema);
+  const a = AnalysisSchema.parse(repaired.value);
+  validateAnalysis(a, 2);
+  assert.deepEqual(a.eligibility, raw.eligibility);
+  assert.deepEqual(a.profile_questions, raw.profile_questions);
+  assert.deepEqual(a.documents, raw.documents);
+  assert.equal(a.schedule.length, raw.schedule.length);
+  assert.deepEqual(a.schedule[0].evidence, []);
+  // The old test expected c11 and its question reference to disappear: that hid a required condition.
+  assert(a.eligibility.some((c) => c.id === 'c11'));
+  assert(a.profile_questions.find((q) => q.id === 'q5')?.criteria_ids.includes('c11'));
+  assert.equal(repaired.repairs, 0);
+});
+
+test('repair never truncates strings or arrays and leaves unknown times for retry', () => {
+  const raw = analysis();
+  raw.profile_questions.push({ ...raw.profile_questions[0], id: 'q9' });
+  raw.summary[0] = '가'.repeat(5000);
+  raw.schedule[1].time = '오후 6시';
+  const repaired = repairOutput(raw, AnalysisSchema);
+  assert.deepEqual(repaired.value, raw);
+  assert.equal(AnalysisSchema.safeParse(repaired.value).success, false);
+  assert.equal(repaired.repairs, 0);
 });
 
 test('repair leaves real problems for validation and retry', () => {
@@ -50,15 +64,18 @@ test('repair leaves real problems for validation and retry', () => {
   const noSummary = analysis();
   noSummary.summary = [];
   assert.equal(AnalysisSchema.safeParse(repairOutput(noSummary, AnalysisSchema).value).success, false);
-  const clean = repairOutput(analysis(), AnalysisSchema, { pages: 2 });
+  const clean = repairOutput(analysis(), AnalysisSchema);
   assert.equal(clean.repairs, 0);
 });
 
-test('transcript pages beyond the document are dropped, not clamped into duplicates', () => {
+test('out-of-range pages are retained for validation instead of dropped or clamped', () => {
   const raw = analysis();
   raw.transcript = [{ page: 1, text: '첫 장' }, { page: 2, text: '둘째 장' }, { page: 3, text: '없는 장' }];
-  const a = AnalysisSchema.parse(repairOutput(raw, AnalysisSchema, { pages: 2 }).value);
-  assert.deepEqual(a.transcript.map((t) => t.page), [1, 2]);
+  raw.eligibility[0].evidence[0].page = 3;
+  const a = AnalysisSchema.parse(repairOutput(raw, AnalysisSchema).value);
+  assert.deepEqual(a.transcript.map((t) => t.page), [1, 2, 3]);
+  assert.equal(a.eligibility[0].evidence[0].page, 3);
+  assert.throws(() => validateAnalysis(a, 2), { code: "bad_output" });
 });
 
 test('match output gets format repairs inside runStructured, with a logged summary', async (t) => {
@@ -67,7 +84,7 @@ test('match output gets format repairs inside runStructured, with a logged summa
   const output = {
     overall: 'needs_check', overall_message: '확인이 필요해요.',
     criteria: [{ criterion_id: 'C1', status: 'check', reason: '답변 없음', how_to_check: null, failed_answer_ids: [] }],
-    next_searches: Array.from({ length: 9 }, (_, i) => ({ criterion_id: 'c1', advice: '다른 공고', query: `검색 ${i}` })),
+    next_searches: Array.from({ length: 8 }, (_, i) => ({ criterion_id: 'c1', advice: '다른 공고', query: `검색 ${i}` })),
     checklist: [],
   };
   const server = createServer((req, res) => {
@@ -90,7 +107,7 @@ test('match output gets format repairs inside runStructured, with a logged summa
     assert.equal(data.next_searches.length, 8);
     const event = logs.map((line) => JSON.parse(line)).find((e) => e.event === 'ai_output_repaired');
     assert.equal(event?.request_id, 'request-repair');
-    assert(event?.repairs >= 2);
+    assert.equal(event?.repairs, 1);
     assert(!JSON.stringify(event).includes('검색'));
   } finally {
     for (const key of Object.keys(process.env)) if (!(key in original)) delete process.env[key];

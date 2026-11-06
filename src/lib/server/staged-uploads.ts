@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { del, get, issueSignedToken, list, presignUrl } from "@vercel/blob";
 import { z } from "zod";
 import type { InputFile } from "../llm";
-import { MAX_UPLOAD_BYTES } from "../limits";
+import { maxUploadBytes } from "../limits";
+import { selectedProvider } from "./config";
 import { fileMediaType } from "../filetypes";
 import { AppError } from "./errors";
 import { privateKey, signUpload, verifyUpload } from "./tokens";
@@ -10,7 +11,7 @@ import { matchesSignature, validateUploadSpecs } from "./uploads";
 import { checkAIAvailability, reserveUploadBudget } from "./guard";
 
 const PREFIX = "easyapply-tmp/";
-const FileSchema = z.object({ name: z.string().min(1).max(200), mediaType: z.string().max(100), size: z.number().int().positive().max(MAX_UPLOAD_BYTES) }).strict();
+const FileSchema = z.object({ name: z.string().min(1).max(200), mediaType: z.string().max(100), size: z.number().int().positive() }).strict();
 const ManifestSchema = z.array(FileSchema.extend({ pathname: z.string().max(250) }).strict()).min(1).max(10);
 type Manifest = z.infer<typeof ManifestSchema>;
 const storage = { get, del };
@@ -27,15 +28,15 @@ export function uploadManifest(ticket: string, sessionId: string): Manifest {
     if (!file.pathname.startsWith(prefix) || !/^\d{13}-[a-f0-9-]{36}$/.test(suffix)) throw new AppError("invalid_upload", "업로드 경로가 올바르지 않아요.", 400);
   }
   if (new Set(files.map(f => f.pathname)).size !== files.length) throw new AppError("invalid_upload", "같은 파일을 중복 지정할 수 없어요.", 400);
-  validateUploadSpecs(files);
+  validateUploadSpecs(files, maxUploadBytes(selectedProvider()));
   return files;
 }
 
 /** `maxBytes` is the active provider's upload limit (see limits.ts). */
-export async function prepareUploads(value: unknown, sessionId: string, req: Request, maxBytes = MAX_UPLOAD_BYTES) {
+export async function prepareUploads(value: unknown, sessionId: string, req: Request, maxBytes = maxUploadBytes(selectedProvider())) {
   if (!largeUploadsAvailable()) throw new AppError("upload_unavailable", "큰 파일 업로드를 준비 중이에요. 잠시 후 다시 시도해 주세요.", 503);
   const parsed = z.object({ files: z.array(FileSchema).min(1).max(10) }).strict().safeParse(value);
-  if (!parsed.success) throw new AppError("invalid_input", `파일 정보나 용량이 올바르지 않아요. 최대 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB까지 올려 주세요.`, 400);
+  if (!parsed.success) throw new AppError("invalid_input", `파일 정보나 용량이 올바르지 않아요. 최대 ${maxBytes / 1024 / 1024}MB까지 올려 주세요.`, 400);
   const files = parsed.data.files.map(f => ({ ...f, mediaType: fileMediaType(f.name, f.mediaType) }));
   validateUploadSpecs(files, maxBytes);
   await checkAIAvailability(req, sessionId, "analyze");

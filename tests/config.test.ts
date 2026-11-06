@@ -85,7 +85,7 @@ test('an unknown provider name is a configuration issue, not a silent fallback',
 test('check:config fails on a provider typo instead of reporting ready', async () => {
   const dir = await mkdtemp(path.join(os.tmpdir(), 'easyapply-check-config-'));
   const env = {
-    PATH: process.env.PATH, HOME: process.env.HOME, NODE_ENV: 'production' as const,
+    PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, TSX_DISABLE_CACHE: process.env.TSX_DISABLE_CACHE, NODE_ENV: 'production' as const,
     EASYAPPLY_PROVIDER: 'antrhopic', ANTHROPIC_API_KEY: 'test-not-real',
     EASYAPPLY_SIGNING_SECRET: 'fixture-signing-secret-at-least-32-bytes',
     KV_REST_API_URL: 'https://marketplace.example', KV_REST_API_TOKEN: 'fixture-token',

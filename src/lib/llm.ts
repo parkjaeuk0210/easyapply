@@ -87,7 +87,7 @@ async function attemptStructured<S extends z.ZodType>(opts: Options<S>, provider
     const raw = provider === "openai" ? await viaOpenAI(opts, signal, log)
       : provider === "api" ? await viaApi(opts, signal, effort, log) : await viaCli(opts, signal, effort);
     signal.throwIfAborted();
-    const repaired = repairOutput(raw, opts.schema, { pages: opts.pages });
+    const repaired = repairOutput(raw, opts.schema);
     if (repaired.repairs) {
       console.info(JSON.stringify({ event: "ai_output_repaired", request_id: log.requestId ?? null, attempt: log.attempt, repairs: repaired.repairs, kinds: repaired.kinds }));
     }

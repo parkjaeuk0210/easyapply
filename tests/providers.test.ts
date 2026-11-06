@@ -81,8 +81,8 @@ test('Anthropic adapter sends Opus 5.5 medium Fast and validates result tool inp
     assert.deepEqual(body?.tool_choice,{type:'auto',disable_parallel_tool_use:true});
     assert.equal((body?.output_config as {format?:unknown}).format,undefined);
     assert.doesNotMatch(JSON.stringify(body),/maxLength/);
-    // Over-long strings are cut to the schema limit instead of failing the paid call.
-    assert.deepEqual((await runStructured({system:'test',text:'analyze',schema:z.object({result:z.string().max(1)})})).data,{result:'o'});
+    // Truncation could erase a qualification or exception; keep the schema failure and retry.
+    await assert.rejects(runStructured({system:'test',text:'analyze',schema:z.object({result:z.string().max(1)})}), {code:'bad_output'});
     await assert.rejects(runStructured({system:'test',text:'analyze',schema:z.object({result:z.number()})}),(error:{code:string})=>error.code==='bad_output');
     outputText='{"items":[{"date":null,"note":null,"required":""}]}';
     const restored=await runStructured({system:'test',text:'analyze',schema:z.object({items:z.array(z.object({date:z.iso.date().nullable(),note:z.string().nullable(),required:z.string()}))})});

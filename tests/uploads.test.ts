@@ -82,7 +82,7 @@ test('upload metadata is checked before charging and exhausted budget rejects be
     let requests = 0;
     globalThis.fetch = async () => { requests++; throw new Error('Storage must not be reached'); };
     const req = new Request('http://localhost:3123/api/uploads'), id = 'budget-before-signing';
-    await assert.rejects(prepareUploads({ files: [{ name: 'bad.pdf', mediaType: 'application/pdf', size: MAX_UPLOAD_BYTES + 1 }] }, id, req), (e: AppError) => e.code === 'invalid_input');
+    await assert.rejects(prepareUploads({ files: [{ name: 'bad.pdf', mediaType: 'application/pdf', size: MAX_UPLOAD_BYTES + 1 }] }, id, req), (e: AppError) => e.code === 'too_large' && e.status === 413);
     // The invalid grant charged nothing: all ten full-size grants still fit.
     for (let i = 0; i < 10; i++) await reserveUploadBudget(req, id, MAX_UPLOAD_BYTES, 1);
     await assert.rejects(prepareUploads({ files: [{ name: 'notice.pdf', mediaType: 'application/pdf', size: 1 }] }, id, req), (e: AppError) => e.code === 'upload_limit' && e.status === 429);

@@ -12,10 +12,11 @@ const date = () => z.iso.date().nullable();
  */
 export const EvidenceSchema = z.object({
   page: z.number().int().min(1).max(MAX_DOCUMENT_PAGES),
-  quote: z.string().min(2).max(1000),
+  // Missing citations remain visible and are marked unverified by the server.
+  quote: z.string().max(1000),
 });
 
-const withEvidence = { evidence: z.array(EvidenceSchema).min(1).max(10) };
+const withEvidence = { evidence: z.array(EvidenceSchema).max(10) };
 
 export const AnalysisSchema = z.object({
   title: label(),
