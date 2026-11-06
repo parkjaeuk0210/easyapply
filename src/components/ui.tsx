@@ -10,6 +10,7 @@ type EvidenceCtx = {
   locate: (e: Evidence) => Located;
   show: (e: Evidence) => void;
   activeQuote: string | null;
+  unit?: string;
 };
 export const EvidenceContext = createContext<EvidenceCtx>({
   locate: (e) => ({ status: "unknown", page: e.page, items: [], ranges: {} }),
@@ -18,7 +19,7 @@ export const EvidenceContext = createContext<EvidenceCtx>({
 });
 
 export function EvidenceChips({ evidence, className = "" }: { evidence: Evidence[]; className?: string }) {
-  const { locate, show, activeQuote } = useContext(EvidenceContext);
+  const { locate, show, activeQuote, unit = "쪽" } = useContext(EvidenceContext);
   if (!evidence?.length) return null;
   return (
     <div className={`flex flex-wrap gap-1.5 ${className}`}>
@@ -45,7 +46,7 @@ export function EvidenceChips({ evidence, className = "" }: { evidence: Evidence
             }`}
           >
             <QuoteIcon />
-            <span>원문 {loc.page}쪽</span>
+            <span>원문 {loc.page}{unit}</span>
             {mark && <span className={`${tone} font-bold`}>{mark}</span>}
           </button>
         );

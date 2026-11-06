@@ -2,7 +2,9 @@
 
 import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Analysis, Answers, Evidence, Match } from "@/lib/schema";
+import { AnalysisSchema, type Analysis, type Answers, type Evidence, type Match } from "@/lib/schema";
+import { contentKey, responseJson } from "@/lib/client-api";
+import { FILE_ACCEPT, fileMediaType, SUPPORTED_TYPES } from "@/lib/filetypes";
 import { locate, type Located, type TextIndex } from "@/lib/textmatch";
 import { daysUntil, ddayLabel, mainDeadline } from "@/lib/dates";
 import { prepareImage } from "@/lib/image";
@@ -16,8 +18,8 @@ const SourceViewer = dynamic(() => import("./SourceViewer"), {
   loading: () => <div className="h-full animate-pulse rounded-2xl bg-surface" />,
 });
 
-type Provider = "api" | "cli" | "none";
-type Status = { provider: Provider; model: string | null; hosted?: boolean; max_upload_bytes?: number };
+type Provider = "openai" | "api" | "cli" | "none";
+type Status = { provider: Provider; model: string | null; hosted?: boolean; max_upload_bytes?: number; access_required?: boolean; message?: string | null };
 type Tab = "overview" | "eligibility" | "documents" | "cautions" | "glossary" | "mine";
 
 const SAMPLE = {
@@ -27,7 +29,7 @@ const SAMPLE = {
   match: "/samples/garam-match.json",
 };
 
-const ACCEPT = ["application/pdf", "image/png", "image/jpeg", "image/webp", "image/gif"];
+const ACCEPT = SUPPORTED_TYPES;
 const mb = (bytes: number, digits = 0) => (bytes / 1024 / 1024).toFixed(digits);
 
 export default function EasyApp() {
@@ -35,6 +37,7 @@ export default function EasyApp() {
   const [stage, setStage] = useState<"upload" | "analyzing" | "result">("upload");
   const [source, setSource] = useState<Source | null>(null);
   const [analysis, setAnalysis] = useState<Analysis | null>(null);
+  const [analysisToken, setAnalysisToken] = useState<string | null>(null);
   const [isSample, setIsSample] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [index, setIndex] = useState<TextIndex | null>(null);
@@ -48,17 +51,30 @@ export default function EasyApp() {
   const [startedAt, setStartedAt] = useState(0);
   const filesRef = useRef<File[]>([]);
   const topRef = useRef<HTMLDivElement>(null);
+  const operation = useRef(0);
+  const controller = useRef<AbortController | null>(null);
+
+  useEffect(() => () => { controller.current?.abort(); }, []);
+  useEffect(() => () => {
+    if (source?.kind === "pdf" && source.url.startsWith("blob:")) URL.revokeObjectURL(source.url);
+    if (source?.kind === "images") source.urls.forEach(URL.revokeObjectURL);
+  }, [source]);
 
   useEffect(() => {
     fetch("/api/status", { cache: "no-store" })
-      .then((r) => r.json())
+      .then(responseJson)
       .then(setStatus)
       .catch(() => setStatus({ provider: "none", model: null }));
   }, []);
 
-  const canRunAI = !!status && status.provider !== "none";
+  const canRunAI = !!status && status.provider !== "none" && !status.access_required;
 
   const reset = () => {
+    operation.current++;
+    controller.current?.abort();
+    setAnalysisToken(null);
+    setError(null);
+    setSheetOpen(false);
     if (source?.kind === "pdf" && source.url.startsWith("blob:")) URL.revokeObjectURL(source.url);
     if (source?.kind === "images") source.urls.forEach((u) => URL.revokeObjectURL(u));
     setStage("upload");
@@ -75,6 +91,12 @@ export default function EasyApp() {
   };
 
   const analyze = useCallback(async (files: File[], src: Source, sample = false) => {
+    const current = ++operation.current;
+    controller.current?.abort();
+    const request = new AbortController(); controller.current = request;
+    setAnalysisToken(null);
+    setExtra("");
+    setDemo(null);
     setError(null);
     setSource(src);
     setAnalysis(null);
@@ -90,8 +112,8 @@ export default function EasyApp() {
     const fd = new FormData();
     files.forEach((f) => fd.append("files", f));
     try {
-      const res = await fetch("/api/analyze", { method: "POST", body: fd });
-      const j = await res.json().catch(() => null);
+      const res = await fetch("/api/analyze", { method: "POST", body: fd, signal: AbortSignal.any([request.signal, AbortSignal.timeout(285_000)]) });
+      const j = await responseJson(res);
       if (!res.ok || !j?.analysis) {
         // Vercel이 함수 앞단에서 끊으면 JSON이 아닌 응답이 온다
         const fallback =
@@ -102,29 +124,35 @@ export default function EasyApp() {
               : `분석에 실패했어요 (${res.status}).`;
         throw new Error(j?.error?.message ?? fallback);
       }
-      setAnalysis(j.analysis);
+      if (current !== operation.current || request.signal.aborted) return;
+      setAnalysis(AnalysisSchema.parse(j.analysis));
+      setAnalysisToken(j.analysis_token ?? null);
+      if (j.source?.kind === "text") setSource(j.source);
       setStage("result");
     } catch (e) {
+      if (current !== operation.current || request.signal.aborted) return;
       setError(e instanceof Error ? e.message : String(e));
       setStage("upload");
+      setSource(null);
     }
   }, []);
 
   async function onFiles(list: FileList | File[]) {
-    let files = Array.from(list);
+    const current = ++operation.current;
+    let files = Array.from(list).map((f) => new File([f], f.name, { type: fileMediaType(f.name, f.type) }));
     if (!files.length) return;
     const bad = files.find((f) => !ACCEPT.includes(f.type));
     if (bad) {
       setError(
         /hei[cf]/i.test(bad.type + bad.name)
           ? "아이폰 HEIC 사진은 아직 지원하지 않아요. JPG/PNG로 저장하거나 화면을 캡처해서 올려 주세요."
-          : `PDF, JPG, PNG, WEBP 파일만 올릴 수 있어요: ${bad.name}`,
+          : `PDF, HWP, HWPX, JPG, PNG, WEBP, GIF 파일만 올릴 수 있어요: ${bad.name}`,
       );
       return;
     }
-    const pdfs = files.filter((f) => f.type === "application/pdf");
+    const pdfs = files.filter((f) => !f.type.startsWith("image/"));
     if (pdfs.length > 1 || (pdfs.length && pdfs.length !== files.length)) {
-      setError("PDF는 한 번에 한 개만 올릴 수 있어요. 사진은 여러 장(최대 10장)을 함께 올릴 수 있어요.");
+      setError("PDF·한글 문서는 한 번에 한 개만 올릴 수 있어요. 사진은 최대 10장까지 올릴 수 있어요.");
       return;
     }
     if (!pdfs.length && files.length > 10) {
@@ -133,7 +161,7 @@ export default function EasyApp() {
     }
     if (!canRunAI) {
       setError(
-        status?.hosted
+        status?.access_required ? "이용 코드를 입력한 뒤 공고문을 올려 주세요." : status?.hosted
           ? "체험판에서는 새 공고문 분석이 꺼져 있어요. 샘플 공고문으로 체험해 보세요."
           : "지금은 AI가 연결되어 있지 않아 새 공고문을 분석할 수 없어요. 샘플 공고문으로 체험해 보세요.",
       );
@@ -142,7 +170,7 @@ export default function EasyApp() {
     const limit = status?.max_upload_bytes ?? 25 * 1024 * 1024;
     if (pdfs.length && pdfs[0].size > limit) {
       setError(
-        `PDF는 ${mb(limit)}MB까지 올릴 수 있는데, 이 파일은 ${mb(pdfs[0].size, 1)}MB예요. ` +
+        `문서는 ${mb(limit)}MB까지 올릴 수 있는데, 이 파일은 ${mb(pdfs[0].size, 1)}MB예요. ` +
           "필요한 쪽만 따로 PDF로 저장하거나, 공고문 화면을 캡처해서 사진으로 올려 주세요.",
       );
       return;
@@ -157,13 +185,17 @@ export default function EasyApp() {
         return;
       }
     }
-    const src: Source = pdfs.length
+    if (current !== operation.current) return;
+    const hangul = files[0].type === "application/x-hwp" || files[0].type === "application/hwp+zip";
+    const src: Source = hangul ? { kind: "text", name: files[0].name, sections: [], warning: "한글 원문을 추출하고 있어요…" } : pdfs.length
       ? { kind: "pdf", url: URL.createObjectURL(pdfs[0]), name: pdfs[0].name }
       : { kind: "images", urls: files.map((f) => URL.createObjectURL(f)), names: files.map((f) => f.name) };
     analyze(files, src);
   }
 
   async function openSample() {
+    const current = ++operation.current;
+    controller.current?.abort();
     setError(null);
     try {
       const [a, m] = await Promise.all([
@@ -174,8 +206,11 @@ export default function EasyApp() {
       ]);
       // 단일 HTML(file://)에서도 열리도록 PDF를 받아 blob 주소로 넘긴다
       const pdf = await fetch(SAMPLE.pdf).then((r) => r.blob());
+      if (current !== operation.current) return;
       setSource({ kind: "pdf", url: URL.createObjectURL(pdf), name: SAMPLE.name });
-      setAnalysis(a.analysis);
+      setAnalysis(AnalysisSchema.parse(a.analysis));
+      setAnalysisToken(null);
+      setExtra("");
       setDemo(m ? { answers: m.answers, match: m.match } : null);
       setIsSample(true);
       setMatch(null);
@@ -185,31 +220,41 @@ export default function EasyApp() {
       setTab("overview");
       setStage("result");
     } catch {
+      if (current !== operation.current) return;
       setError("샘플을 불러오지 못했어요.");
     }
   }
 
   async function rerunSampleLive() {
-    const blob = await fetch(SAMPLE.pdf).then((r) => r.blob());
-    const file = new File([blob], SAMPLE.name, { type: "application/pdf" });
-    analyze([file], { kind: "pdf", url: URL.createObjectURL(blob), name: SAMPLE.name }, true);
-    setDemo(null);
+    const current = ++operation.current;
+    try {
+      const response = await fetch(SAMPLE.pdf);
+      if (!response.ok) throw new Error("sample_unavailable");
+      const blob = await response.blob();
+      if (current !== operation.current) return;
+      const file = new File([blob], SAMPLE.name, { type: "application/pdf" });
+      await analyze([file], { kind: "pdf", url: URL.createObjectURL(blob), name: SAMPLE.name });
+    } catch {
+      if (current === operation.current) setError("샘플 원문을 불러오지 못했어요. 다시 시도해 주세요.");
+    }
   }
 
   // ── 근거 처리 ──
-  const cache = useRef(new Map<string, Located>());
-  useEffect(() => cache.current.clear(), [index]);
+  const cache = useMemo(() => {
+    const locations = new Map<string, Located>();
+    if (analysis && index) {
+      const evidence = [...analysis.benefits, ...analysis.schedule, ...analysis.how_to_apply, ...analysis.eligibility,
+        ...analysis.documents, ...analysis.cautions, ...analysis.glossary].flatMap(item => item.evidence);
+      for (const e of evidence) locations.set(`${e.page}|${e.quote}`, locate(index, e.page, e.quote));
+    }
+    return locations;
+  }, [index, analysis]);
   const locateEv = useCallback(
     (e: Evidence) => {
       const k = `${e.page}|${e.quote}`;
-      let v = cache.current.get(k);
-      if (!v) {
-        v = locate(index, e.page, e.quote);
-        if (index) cache.current.set(k, v);
-      }
-      return v;
+      return cache.get(k) ?? locate(index, e.page, e.quote);
     },
-    [index],
+    [index, cache],
   );
   const show = useCallback(
     (e: Evidence) => {
@@ -219,7 +264,7 @@ export default function EasyApp() {
     },
     [locateEv],
   );
-  const evCtx = useMemo(() => ({ locate: locateEv, show, activeQuote: active?.quote ?? null }), [locateEv, show, active]);
+  const evCtx = useMemo(() => ({ locate: locateEv, show, activeQuote: active?.quote ?? null, unit: source?.kind === "text" ? "구역" : "쪽" }), [locateEv, show, active, source]);
 
   const verify = useMemo(() => {
     if (!analysis || !index) return null;
@@ -234,15 +279,13 @@ export default function EasyApp() {
     ].flatMap((x) => x.evidence);
     const c = { exact: 0, fuzzy: 0, none: 0, unknown: 0 };
     all.forEach((e) => c[locate(index, e.page, e.quote).status]++);
-    return { total: all.length, ...c };
+    return { total: all.length, source: index.source, ...c };
   }, [analysis, index]);
 
   const docKey = useMemo(() => {
     if (!analysis) return "";
-    let h = 0;
-    for (const ch of analysis.title + (source?.kind === "pdf" ? source.name : "")) h = (h * 31 + ch.charCodeAt(0)) | 0;
-    return String(h >>> 0);
-  }, [analysis, source]);
+    return contentKey(analysis);
+  }, [analysis]);
 
   const goTab = (t: Tab) => {
     setTab(t);
@@ -254,11 +297,14 @@ export default function EasyApp() {
       <Header
         status={status}
         onHome={stage !== "upload" ? reset : undefined}
-        fileName={stage !== "upload" && source ? (source.kind === "pdf" ? source.name : `이미지 ${source.urls.length}장`) : null}
+        fileName={stage !== "upload" && source ? (source.kind !== "images" ? source.name : `이미지 ${source.urls.length}장`) : null}
       />
 
       {stage === "upload" && (
-        <UploadScreen onFiles={onFiles} onSample={openSample} error={error} status={status} />
+        <UploadScreen onFiles={onFiles} onSample={openSample} error={error} status={status} onUnlock={async (code) => {
+          await fetch("/api/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) }).then(responseJson);
+          setStatus(await fetch("/api/status", { cache: "no-store" }).then(responseJson));
+        }} />
       )}
 
       {stage !== "upload" && source && (
@@ -296,6 +342,8 @@ export default function EasyApp() {
                       onMatch={setMatch}
                       demoMatch={isSample ? demo : null}
                       canRunAI={canRunAI}
+                      analysisToken={analysisToken}
+                      sample={isSample && !!demo}
                     />
                   )}
                 </div>
@@ -386,8 +434,9 @@ function Header({
 function ProviderBadge({ status }: { status: Status | null }) {
   if (!status) return null;
   const map = {
-    api: { dot: "bg-ok", text: "AI 연결됨" },
-    cli: { dot: "bg-ok", text: "AI 연결됨 · 로컬" },
+    openai: { dot: "bg-ok", text: "OpenAI 분석" },
+    api: { dot: "bg-ok", text: "Claude 분석" },
+    cli: { dot: "bg-ok", text: "로컬 AI 분석" },
     none: { dot: "bg-warn", text: status.hosted ? "체험판 · 샘플만" : "AI 미연결 · 샘플 체험만" },
   }[status.provider];
   return (
@@ -408,15 +457,20 @@ function UploadScreen({
   onSample,
   error,
   status,
+  onUnlock,
 }: {
   onFiles: (f: FileList | File[]) => void;
   onSample: () => void;
   error: string | null;
   status: Status | null;
+  onUnlock: (code: string) => Promise<void>;
 }) {
   const provider = status?.provider ?? null;
   const [drag, setDrag] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const [code, setCode] = useState("");
+  const [unlockError, setUnlockError] = useState<string | null>(null);
+  const [unlocking, setUnlocking] = useState(false);
 
   return (
     <main className="mx-auto max-w-[1180px] px-4 pb-16 pt-10 sm:px-6 lg:pt-16">
@@ -433,6 +487,15 @@ function UploadScreen({
             만들어 줘요. 모든 설명에는 근거가 된 공고문 원문을 함께 보여드려요.
           </p>
 
+          {status?.access_required && <form className="mt-5 space-y-2 rounded-xl border border-line p-4" onSubmit={async (e) => {
+            e.preventDefault(); setUnlocking(true); setUnlockError(null);
+            try { await onUnlock(code); setCode(""); } catch (err) { setUnlockError(err instanceof Error ? err.message : "연결에 실패했어요."); } finally { setUnlocking(false); }
+          }}>
+            <label htmlFor="access-code" className="block text-sm font-semibold">이용 코드</label>
+            <input id="access-code" type="password" autoComplete="current-password" required maxLength={256} value={code} onChange={e => setCode(e.target.value)} className="rounded-lg border border-line p-2" />
+            <button disabled={unlocking} className="ml-2 rounded-lg bg-brand px-4 py-2 text-white">{unlocking ? "확인 중…" : "확인"}</button>
+            {unlockError && <p role="alert" className="text-sm text-bad">{unlockError}</p>}
+          </form>}
           <div
             onDragOver={(e) => {
               e.preventDefault();
@@ -449,8 +512,8 @@ function UploadScreen({
             }`}
           >
             <UploadIcon />
-            <p className="mt-3 text-[15.5px] font-semibold text-ink">공고문 PDF나 사진을 여기에 끌어다 놓으세요</p>
-            <p className="mt-1 text-[13px] text-muted">PDF 1개({mb(status?.max_upload_bytes ?? 25 * 1024 * 1024)}MB 이하) 또는 사진 최대 10장 · JPG, PNG, WEBP</p>
+            <p className="mt-3 text-[15.5px] font-semibold text-ink">공고문 PDF·한글 파일이나 사진을 올려 주세요</p>
+            <p className="mt-1 text-[13px] text-muted">PDF·HWP·HWPX 1개({mb(status?.max_upload_bytes ?? 4 * 1024 * 1024)}MB 이하) 또는 사진 최대 10장</p>
             <button
               onClick={() => input.current?.click()}
               className="mt-4 rounded-xl bg-brand px-5 py-2.5 text-[14.5px] font-bold text-white transition hover:bg-brand-ink"
@@ -460,7 +523,7 @@ function UploadScreen({
             <input
               ref={input}
               type="file"
-              accept={ACCEPT.join(",")}
+              accept={FILE_ACCEPT}
               multiple
               className="hidden"
               onChange={(e) => {
@@ -477,8 +540,7 @@ function UploadScreen({
                 <>지금은 체험판이라 새 공고문 분석이 꺼져 있어요. 아래 샘플 공고문으로 모든 기능을 체험할 수 있어요.</>
               ) : (
                 <>
-                  AI가 연결되지 않은 상태예요. 새 공고문 분석은 <code className="font-mono">ANTHROPIC_API_KEY</code>를 설정하면 쓸 수
-                  있어요. 지금은 샘플 공고문으로 모든 기능을 체험할 수 있어요.
+                  새 공고문 분석을 준비 중이에요. 지금은 샘플 공고문을 체험할 수 있어요.
                 </>
               )}
             </div>
@@ -630,7 +692,7 @@ function ResultHeader({
   onCheck,
 }: {
   a: Analysis;
-  verify: { total: number; exact: number; fuzzy: number; none: number; unknown: number } | null;
+  verify: { total: number; source: TextIndex["source"]; exact: number; fuzzy: number; none: number; unknown: number } | null;
   isSample: boolean;
   canRunAI: boolean;
   onRerun: () => void;
@@ -671,16 +733,16 @@ function ResultHeader({
           )}
         </div>
         <div className="rounded-xl bg-surface-2 px-4 py-3">
-          <div className="text-[12px] font-semibold text-muted">원문 근거 대조</div>
+          <div className="text-[12px] font-semibold text-muted">{verify?.source === "transcript" ? "AI 판독문 내부 대조" : "원문 근거 대조"}</div>
           {verify ? (
             verify.unknown === verify.total ? (
               <div className="mt-0.5 text-[13px] leading-snug text-ink-2">스캔 문서라 자동 대조가 안 돼요 · ‘원문’을 눌러 직접 확인</div>
             ) : (
               <div className="mt-0.5 flex items-baseline gap-2">
                 <span className="text-[20px] font-extrabold text-ok">
-                  {verify.exact + verify.fuzzy}/{verify.total}
+                  {verify.exact}/{verify.total}
                 </span>
-                <span className="text-[13px] text-ink-2">개 문장을 원문에서 찾았어요</span>
+                <span className="text-[13px] text-ink-2">개 문장 일치{verify.fuzzy > 0 ? ` · 유사 ${verify.fuzzy}개` : ""}</span>
               </div>
             )
           ) : (
@@ -688,6 +750,7 @@ function ResultHeader({
               <Spinner /> 원문과 맞춰보는 중
             </div>
           )}
+          {verify?.source === "transcript" && <p className="mt-1 text-xs text-muted">AI가 옮긴 글자끼리 비교한 결과예요. 이미지 원문을 직접 확인해 주세요.</p>}
         </div>
       </div>
       <button

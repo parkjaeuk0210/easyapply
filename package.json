@@ -3,14 +3,21 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 127.0.0.1",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test": "tsx --test tests/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "check:config": "tsx scripts/check-config.ts"
   },
+  "engines": { "node": ">=22.0.0" },
   "dependencies": {
     "@anthropic-ai/sdk": "^1.6.0",
+    "@mdgate/containers": "^0.6.25",
     "next": "16.4.5",
+    "openai": "^7.53.0",
+    "pdfjs-dist": "^6.3.289",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "react-pdf": "^11.0.0",
@@ -25,6 +32,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.4.5",
     "tailwindcss": "^4",
+    "tsx": "^4.23.15",
     "typescript": "^5"
   }
 }

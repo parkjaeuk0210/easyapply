@@ -16,7 +16,7 @@ export type IndexedPage = {
 };
 
 export type TextIndex = {
-  source: "pdf" | "transcript";
+  source: "pdf" | "transcript" | "extracted";
   pages: IndexedPage[];
   hasText: boolean;
 };

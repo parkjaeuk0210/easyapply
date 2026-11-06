@@ -30,8 +30,8 @@ export default function SourceViewer({ source, transcript, active, onIndex, onCl
         <div className="min-w-0 flex-1">
           <div className="text-[13px] font-semibold text-ink">공고문 원문</div>
           <div className="truncate text-xs text-muted">
-            {source.kind === "pdf" ? source.name : `이미지 ${source.urls.length}장`}
-            {pageCount ? ` · ${pageCount}쪽` : ""}
+            {source.kind !== "images" ? source.name : `이미지 ${source.urls.length}장`}
+            {source.kind !== "text" && pageCount ? ` · ${pageCount}쪽` : ""}
           </div>
         </div>
         <div className="flex items-center rounded-lg border border-line" role="group" aria-label="확대/축소">
@@ -74,11 +74,13 @@ export default function SourceViewer({ source, transcript, active, onIndex, onCl
         )}
       </div>
 
-      {active && <EvidenceBanner active={active} photo={source.kind === "images"} />}
+      {active && source.kind !== "text" && <EvidenceBanner active={active} photo={source.kind === "images"} />}
 
       <div ref={scrollRef} className="scrollbar-thin relative flex-1 overflow-auto bg-[#e9ecf1] px-3 py-4 sm:px-5">
         {source.kind === "pdf" ? (
           <PdfPane url={source.url} active={active} onIndex={onIndex} onPages={setPageCount} scrollRef={scrollRef} zoom={zoom} />
+        ) : source.kind === "text" ? (
+          <TextPane source={source} active={active} onIndex={onIndex} scrollRef={scrollRef} />
         ) : (
           <ImagePane
             urls={source.urls}
@@ -92,6 +94,28 @@ export default function SourceViewer({ source, transcript, active, onIndex, onCl
       </div>
     </div>
   );
+}
+
+function TextPane({ source, active, onIndex, scrollRef }: {
+  source: Extract<Source, { kind: "text" }>;
+  active: ActiveEvidence | null;
+  onIndex: (index: TextIndex) => void;
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+}) {
+  const pages = useMemo(() => source.sections.map(s => ({ page: s.page, items: s.text.split("\n") })), [source.sections]);
+  useEffect(() => { onIndex(buildIndex(pages, "extracted")); }, [pages, onIndex]);
+  useEffect(() => {
+    if (!active) return;
+    const element = scrollRef.current?.querySelector<HTMLElement>(`[data-page="${active.page}"]`);
+    if (element && scrollRef.current) scrollRef.current.scrollTo({ top: element.offsetTop - 12, behavior: "smooth" });
+  }, [active, scrollRef]);
+  return <div className="space-y-4">
+    <p className="rounded-xl bg-warn-soft p-3 text-sm text-warn">{source.warning}</p>
+    {pages.map(p => <section key={p.page} data-page={p.page} className="rounded-xl bg-white p-4">
+      <h3 className="mb-3 text-xs font-semibold text-muted">원문 추출 {p.page}구역</h3>
+      <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">{p.items.map((line, i) => <div key={i}>{active?.page === p.page && active.items.includes(i) ? <mark className="ea-line">{line}</mark> : line || "\u00a0"}</div>)}</div>
+    </section>)}
+  </div>;
 }
 
 function EvidenceBanner({ active, photo }: { active: ActiveEvidence; photo: boolean }) {

@@ -1,66 +1,46 @@
+import { randomUUID } from "node:crypto";
 import { AnalysisSchema } from "@/lib/schema";
 import { ANALYZE_SYSTEM, analyzeUserText } from "@/lib/prompts";
-import { LlmError, runStructured, todayKST, type InputFile } from "@/lib/llm";
-import { MAX_UPLOAD_BYTES } from "@/lib/limits";
+import { detectProvider, runStructured, todayKST } from "@/lib/llm";
+import { AppError, errorResponse, json } from "@/lib/server/errors";
+import { acquireAI, guard, limitAttempts } from "@/lib/server/guard";
+import { readUploads, inspectPdf, verifyEvidence } from "@/lib/server/uploads";
+import { extractHangul } from "@/lib/server/hangul";
+import { validateAnalysis } from "@/lib/server/validation";
+import { signAnalysis } from "@/lib/server/tokens";
+import type { TextIndex } from "@/lib/textmatch";
+import { isLoopbackRequest } from "@/lib/server/http";
 
 export const maxDuration = 300;
-
-const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"];
-const MAX_PDF = MAX_UPLOAD_BYTES;
-const MAX_IMAGE = 5 * 1024 * 1024;
-const MAX_IMAGES = 10;
-
-function bad(message: string, status = 400, code = "invalid_input") {
-  return Response.json({ error: { code, message } }, { status });
-}
-
 export async function POST(req: Request) {
-  let form: FormData;
+  const requestId = randomUUID(), started = Date.now();
+  let release: (() => Promise<void>) | undefined;
   try {
-    form = await req.formData();
-  } catch {
-    return bad("업로드한 파일을 읽지 못했어요.");
-  }
-  const files = form.getAll("files").filter((f): f is File => f instanceof File);
-  if (!files.length) return bad("공고문 PDF나 이미지를 올려 주세요.");
-
-  const pdfs = files.filter((f) => f.type === "application/pdf");
-  const images = files.filter((f) => IMAGE_TYPES.includes(f.type));
-  const unsupported = files.find((f) => f.type !== "application/pdf" && !IMAGE_TYPES.includes(f.type));
-  if (unsupported) {
-    const heic = /heic|heif/i.test(unsupported.type) || /\.hei[cf]$/i.test(unsupported.name);
-    return bad(
-      heic
-        ? "아이폰 HEIC 사진은 아직 지원하지 않아요. JPG/PNG로 저장하거나 캡처해서 올려 주세요."
-        : `지원하지 않는 파일 형식이에요: ${unsupported.name} (PDF, JPG, PNG, WEBP만 가능)`,
-    );
-  }
-  if (pdfs.length > 1 || (pdfs.length && images.length))
-    return bad("PDF는 한 번에 한 개만 올릴 수 있어요. (이미지는 여러 장 가능)");
-  const mb = Math.floor(MAX_UPLOAD_BYTES / 1024 / 1024);
-  if (pdfs[0] && pdfs[0].size > MAX_PDF) return bad(`PDF가 너무 커요. ${mb}MB 이하로 올려 주세요.`, 413);
-  if (images.length > MAX_IMAGES) return bad(`이미지는 최대 ${MAX_IMAGES}장까지 올릴 수 있어요.`);
-  const bigImage = images.find((f) => f.size > MAX_IMAGE);
-  if (bigImage) return bad(`이미지가 너무 커요(5MB 초과): ${bigImage.name}`, 413);
-  if (files.reduce((n, f) => n + f.size, 0) > MAX_UPLOAD_BYTES)
-    return bad(`올린 파일이 합쳐서 ${mb}MB를 넘어요. 사진 장수를 줄여서 다시 올려 주세요.`, 413);
-
-  const input: InputFile[] = await Promise.all(
-    files.map(async (f) => ({ name: f.name, mediaType: f.type, data: Buffer.from(await f.arrayBuffer()) })),
-  );
-
-  const started = Date.now();
-  try {
-    const { data, provider } = await runStructured({
-      system: ANALYZE_SYSTEM,
-      text: analyzeUserText({ kind: pdfs.length ? "pdf" : "images", count: files.length, today: todayKST() }),
-      files: input,
-      schema: AnalysisSchema,
+    const sid = guard(req);
+    await limitAttempts(req);
+    const provider = await detectProvider();
+    if (provider === "none") throw new AppError("no_provider", "AI 연결이 준비되지 않았어요. 샘플 체험을 이용해 주세요.", 503);
+    if (provider === "cli" && !isLoopbackRequest(req)) throw new AppError("local_only", "로컬 분석은 localhost에서만 사용할 수 있어요.", 403);
+    const files = await readUploads(req);
+    release = await acquireAI(req, sid, "analyze");
+    const first = files[0], pdf = first.mediaType === "application/pdf";
+    const hangul = ["application/x-hwp", "application/hwp+zip"].includes(first.mediaType);
+    let index: TextIndex | null = null, count = files.length;
+    let extracted: Awaited<ReturnType<typeof extractHangul>> | null = null;
+    if (pdf) { const inspected = await inspectPdf(first, req.signal); index = inspected.index; count = inspected.pages; }
+    if (hangul) { extracted = await extractHangul(first, req.signal); index = extracted.index; count = extracted.sections.length; }
+    const text = extracted
+      ? `오늘은 ${todayKST()}입니다. 한글 공고문에서 추출한 본문을 분석하세요. page는 아래 구역 번호이며 실제 쪽수는 아닙니다. transcript는 빈 배열로 두세요. 표 셀 연결이 모호하면 추측하지 말고 reading_notes에 명시하세요.\n${extracted.warning}\n\n${extracted.sections.map(s => `=== ${s.page}구역 ===\n${s.text}`).join("\n\n")}`
+      : analyzeUserText({ kind: pdf ? "pdf" : "images", count: files.length, today: todayKST() });
+    const { data: analysis, provider: used } = await runStructured({
+      system: ANALYZE_SYSTEM, text, files: extracted ? [] : files, schema: AnalysisSchema, signal: req.signal,
     });
-    return Response.json({ analysis: data, provider, elapsed_ms: Date.now() - started });
-  } catch (e) {
-    const err = e instanceof LlmError ? e : new LlmError("unknown", String(e));
-    console.error("[easyapply/analyze]", err.code, err.message);
-    return Response.json({ error: { code: err.code, message: err.message } }, { status: err.status });
-  }
+    validateAnalysis(analysis, count);
+    const verification = verifyEvidence(analysis, index);
+    if (extracted?.uncertainLayout) verification.unverified_criteria = analysis.eligibility.map(c => c.id);
+    const source = extracted ? { kind: "text", name: first.name, sections: extracted.sections, warning: extracted.warning } : undefined;
+    console.info(JSON.stringify({ event: "analyze_complete", request_id: requestId, provider: used, elapsed_ms: Date.now() - started, verification }));
+    return json({ analysis, analysis_token: signAnalysis(analysis, sid, verification.unverified_criteria), verification, source, provider: used, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
+  } catch (e) { return errorResponse(e, requestId); }
+  finally { await release?.(); }
 }

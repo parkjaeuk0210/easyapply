@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
-import type { Analysis, Answers, Match, ProfileQuestion } from "@/lib/schema";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { MatchSchema, type Analysis, type Answers, type Match, type ProfileQuestion } from "@/lib/schema";
+import { contentKey, responseJson } from "@/lib/client-api";
 import { buildIcs, daysUntil, ddayLabel, download, mainDeadline, shortDate } from "@/lib/dates";
 import { Card, EvidenceChips, Pill, SectionTitle, Spinner, StatusPill, STATUS } from "./ui";
 
@@ -17,6 +18,8 @@ type Props = {
   /** 샘플 체험 + AI 미연결일 때 쓸 미리 계산된 결과 */
   demoMatch?: { answers: Answers; match: Match } | null;
   canRunAI: boolean;
+  analysisToken?: string | null;
+  sample?: boolean;
 };
 
 const UNSURE = "잘 모르겠어요";
@@ -38,10 +41,12 @@ export default function ProfileCheck(props: Props) {
 
 // ── 입력 폼 ─────────────────────────────────────────────────────
 
-function ProfileForm({ a, answers, extra, onAnswers, onExtra, onMatch, demoMatch, canRunAI, onDone }: Props & { onDone: () => void }) {
+function ProfileForm({ a, answers, extra, onAnswers, onExtra, onMatch, demoMatch, canRunAI, analysisToken, sample, onDone }: Props & { onDone: () => void }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [elapsed, setElapsed] = useState(0);
+  const request = useRef<AbortController | null>(null);
+  useEffect(() => () => request.current?.abort(), []);
 
   useEffect(() => {
     if (!busy) return;
@@ -55,6 +60,7 @@ function ProfileForm({ a, answers, extra, onAnswers, onExtra, onMatch, demoMatch
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
+    if (request.current) return;
     setError(null);
     const sameAsDemo =
       !!demoMatch &&
@@ -70,30 +76,35 @@ function ProfileForm({ a, answers, extra, onAnswers, onExtra, onMatch, demoMatch
       setError(
         demoMatch
           ? "지금은 AI가 연결되지 않아 미리 준비한 예시 답변의 결과만 보여드릴 수 있어요. ‘예시 답변 채우기’를 눌러 주세요."
-          : "AI 연결이 없어 비교할 수 없어요. README의 설정 방법을 확인해 주세요.",
+          : "지금은 AI 분석을 이용할 수 없어요. 잠시 후 다시 시도해 주세요.",
       );
       return;
     }
     setBusy(true);
+    const controller = new AbortController(); request.current = controller;
     try {
       const res = await fetch("/api/match", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ analysis: a, answers, extra }),
+        body: JSON.stringify({ ...(sample ? { sample: true } : { analysis: a, analysis_token: analysisToken ?? undefined }), answers, extra }),
+        signal: AbortSignal.any([controller.signal, AbortSignal.timeout(285_000)]),
       });
-      const j = await res.json();
-      if (!res.ok) throw new Error(j?.error?.message ?? "비교에 실패했어요.");
-      onMatch(j.match);
+      const j = await responseJson(res);
+      if (controller.signal.aborted) return;
+      onMatch(MatchSchema.parse(j.match));
       onDone();
     } catch (err) {
+      if (controller.signal.aborted) return;
       setError(err instanceof Error ? err.message : String(err));
     } finally {
-      setBusy(false);
+      if (request.current === controller) request.current = null;
+      if (!controller.signal.aborted) setBusy(false);
     }
   }
 
   return (
     <form onSubmit={submit} className="space-y-4">
+      <fieldset disabled={busy} className="space-y-4">
       <Card className="p-5">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -147,7 +158,7 @@ function ProfileForm({ a, answers, extra, onAnswers, onExtra, onMatch, demoMatch
         />
       </Card>
 
-      {error && <div className="rounded-xl bg-bad-soft px-4 py-3 text-[13.5px] text-bad">{error}</div>}
+      {error && <div role="alert" className="rounded-xl bg-bad-soft px-4 py-3 text-[13.5px] text-bad">{error}</div>}
 
       <div className="sticky bottom-0 z-10 -mx-1 bg-gradient-to-t from-bg via-bg to-bg/0 px-1 pb-3 pt-4">
         <button
@@ -164,7 +175,9 @@ function ProfileForm({ a, answers, extra, onAnswers, onExtra, onMatch, demoMatch
           )}
         </button>
       </div>
-      <p className="text-center text-[11.5px] text-muted">입력한 정보는 EasyApply 서버에 저장하지 않고, 이번 확인에만 사용해요.</p>
+      </fieldset>
+      {busy && <button type="button" className="text-sm text-muted underline" onClick={() => { request.current?.abort(); request.current = null; setBusy(false); }}>비교 취소</button>}
+      <p className="text-center text-[11.5px] text-muted">입력한 정보는 AI 제공자에게 분석을 위해 전송돼요. EasyApply 서버에는 저장하지 않아요.</p>
     </form>
   );
 }
@@ -219,7 +232,8 @@ function QuestionInput({ q, value, onChange }: { q: ProfileQuestion; value: stri
         <input
           type="number"
           inputMode="decimal"
-          value={value}
+          value={value === UNSURE ? "" : value}
+          aria-label={q.label}
           onChange={(e) => onChange(e.target.value)}
           className={`${base} max-w-[220px]`}
           placeholder="숫자 입력"
@@ -232,9 +246,9 @@ function QuestionInput({ q, value, onChange }: { q: ProfileQuestion; value: stri
     );
   }
   if (q.input === "date") {
-    return <input type="date" value={value} onChange={(e) => onChange(e.target.value)} className={`${base} max-w-[220px]`} />;
+    return <input type="date" aria-label={q.label} value={value} onChange={(e) => onChange(e.target.value)} className={`${base} max-w-[220px]`} />;
   }
-  return <input type="text" value={value} onChange={(e) => onChange(e.target.value)} className={base} placeholder="직접 입력" />;
+  return <input type="text" aria-label={q.label} maxLength={2000} value={value} onChange={(e) => onChange(e.target.value)} className={base} placeholder="직접 입력" />;
 }
 
 function withUnsure(options: string[]) {
@@ -289,7 +303,7 @@ const KIND = {
 };
 
 function MatchResult({ a, match, docKey, onEdit }: { a: Analysis; match: Match; docKey: string; onEdit: () => void }) {
-  const storeKey = `easyapply:done:${docKey}`;
+  const storeKey = `easyapply:done:${docKey}:${contentKey(match.checklist)}`;
   const [done, setDone] = useState<Record<string, boolean>>(() => {
     try {
       return JSON.parse(localStorage.getItem(storeKey) || "{}");
@@ -298,6 +312,7 @@ function MatchResult({ a, match, docKey, onEdit }: { a: Analysis; match: Match; 
     }
   });
   const [copied, setCopied] = useState(false);
+  const [copyError, setCopyError] = useState<string | null>(null);
   const toggle = (id: string) => setDone((prev) => ({ ...prev, [id]: !prev[id] }));
   useEffect(() => {
     try {
@@ -325,10 +340,11 @@ function MatchResult({ a, match, docKey, onEdit }: { a: Analysis; match: Match; 
       lines.push(`${done[t.id] ? "☑" : "☐"} ${i + 1}. ${t.title}${t.due_date_iso ? ` (~${shortDate(t.due_date_iso)})` : ""}`);
       if (t.detail) lines.push(`    ${t.detail}`);
     });
-    navigator.clipboard?.writeText(lines.filter((l, i) => l || i > 1).join("\n")).then(() => {
+    if (!navigator.clipboard) { setCopyError("이 브라우저에서는 복사를 지원하지 않아요. 인쇄 또는 PDF 저장을 이용해 주세요."); return; }
+    navigator.clipboard.writeText(lines.filter((l, i) => l || i > 1).join("\n")).then(() => {
       setCopied(true);
       setTimeout(() => setCopied(false), 1800);
-    });
+    }).catch(() => setCopyError("복사 권한을 확인해 주세요. 인쇄 또는 PDF 저장도 사용할 수 있어요."));
   }
 
   return (
@@ -442,6 +458,7 @@ function MatchResult({ a, match, docKey, onEdit }: { a: Analysis; match: Match; 
           <ActionBtn onClick={copyText}>{copied ? "복사했어요" : "📋 텍스트로 복사"}</ActionBtn>
           <ActionBtn onClick={() => window.print()}>🖨 인쇄 / PDF</ActionBtn>
         </div>
+        {copyError && <p role="alert" className="mt-2 text-sm text-bad">{copyError}</p>}
       </Card>
 
       <p className="px-1 text-[12px] leading-relaxed text-muted">

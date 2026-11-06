@@ -1,0 +1,6 @@
+basicsReport.hwp and hwpjs-LICENSE:
+https://github.com/hahnlee/hwp.js/tree/b631063e9149737a909f78c25667ad9ecf116c3a/packages/parser/src/__tests__/data
+Source project: hahnlee/hwp.js, Apache-2.0 (license included).
+
+notice.hwpx: synthetic EasyApply test notice with body and a 2-cell table, created for this test suite.
+oversized.hwpx: synthetic compressed text exceeding the extraction limit; rejection fixture.
