@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { MAX_DOCUMENT_PAGES } from "./document-limits";
 
 const text = () => z.string().max(4000);
 const label = () => z.string().min(1).max(300);
@@ -10,7 +11,7 @@ const date = () => z.iso.date().nullable();
  * quote는 공고문에 적힌 문장을 그대로 옮긴 짧은 구절이어야 한다 — 화면에서 원문과 대조해 하이라이트한다.
  */
 export const EvidenceSchema = z.object({
-  page: z.number().int().min(1).max(100),
+  page: z.number().int().min(1).max(MAX_DOCUMENT_PAGES),
   quote: z.string().min(2).max(1000),
 });
 
@@ -74,7 +75,7 @@ export const AnalysisSchema = z.object({
   contact: text().nullable(),
   contact_evidence: z.array(EvidenceSchema).max(10).prefault([]),
   reading_notes: text().nullable(),
-  transcript: z.array(z.object({ page: z.number().int().min(1).max(100), text: z.string().max(30_000) })).max(100),
+  transcript: z.array(z.object({ page: z.number().int().min(1).max(MAX_DOCUMENT_PAGES), text: z.string().max(30_000) })).max(MAX_DOCUMENT_PAGES),
 });
 
 export const MatchSchema = z.object({

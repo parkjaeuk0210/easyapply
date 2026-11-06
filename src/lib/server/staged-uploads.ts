@@ -7,7 +7,7 @@ import { fileMediaType } from "../filetypes";
 import { AppError } from "./errors";
 import { privateKey, signUpload, verifyUpload } from "./tokens";
 import { matchesSignature, validateUploadSpecs } from "./uploads";
-import { reserveUploadBudget } from "./guard";
+import { checkAIAvailability, reserveUploadBudget } from "./guard";
 
 const PREFIX = "easyapply-tmp/";
 const FileSchema = z.object({ name: z.string().min(1).max(200), mediaType: z.string().max(100), size: z.number().int().positive().max(MAX_UPLOAD_BYTES) }).strict();
@@ -34,9 +34,10 @@ export function uploadManifest(ticket: string, sessionId: string): Manifest {
 export async function prepareUploads(value: unknown, sessionId: string, req: Request) {
   if (!largeUploadsAvailable()) throw new AppError("upload_unavailable", "큰 파일 업로드를 준비 중이에요. 잠시 후 다시 시도해 주세요.", 503);
   const parsed = z.object({ files: z.array(FileSchema).min(1).max(10) }).strict().safeParse(value);
-  if (!parsed.success) throw new AppError("invalid_input", "파일 정보나 용량이 올바르지 않아요. 최대 25MB까지 올려 주세요.", 400);
+  if (!parsed.success) throw new AppError("invalid_input", `파일 정보나 용량이 올바르지 않아요. 최대 ${MAX_UPLOAD_BYTES / 1024 / 1024}MB까지 올려 주세요.`, 400);
   const files = parsed.data.files.map(f => ({ ...f, mediaType: fileMediaType(f.name, f.mediaType) }));
   validateUploadSpecs(files);
+  await checkAIAvailability(req, sessionId, "analyze");
   await reserveUploadBudget(req, sessionId, files.reduce((sum, file) => sum + file.size, 0), files.length);
   const manifest = files.map(f => ({ ...f, pathname: `${PREFIX}${privateKey(sessionId)}/${Date.now()}-${randomUUID()}` }));
   const validUntil = Date.now() + 10 * 60_000;

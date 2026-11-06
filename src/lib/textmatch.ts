@@ -38,7 +38,6 @@ const CHAR_MAP: Record<string, string> = {
   "‧": "·",
   "∙": "·",
   "•": "·",
-  "ㆍ": "·",
   "・": "·",
   "–": "-",
   "—": "-",
@@ -46,11 +45,12 @@ const CHAR_MAP: Record<string, string> = {
   "−": "-",
   "～": "~",
   "〜": "~",
+  "∼": "~",
 };
 
 export function normalize(s: string): string {
   let out = "";
-  for (const ch of s.normalize("NFKC")) {
+  for (const ch of s.replace(/ㆍ/g, "·").normalize("NFKC")) {
     if (/\s/.test(ch)) continue;
     out += CHAR_MAP[ch] ?? ch.toLowerCase();
   }

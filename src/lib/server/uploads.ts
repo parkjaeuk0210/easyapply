@@ -1,5 +1,6 @@
 import type { InputFile } from "../llm";
 import { DIRECT_UPLOAD_BYTES, MAX_UPLOAD_BYTES } from "../limits";
+import { MAX_DOCUMENT_PAGES, MAX_EXTRACTED_CHARS } from "../document-limits";
 import { buildIndex, locate, type TextIndex } from "../textmatch";
 import type { Analysis } from "../schema";
 import { AppError } from "./errors";
@@ -15,7 +16,7 @@ export function validateUploadSpecs(files: UploadSpec[], maxBytes = MAX_UPLOAD_B
   if (files.some(f => !f.name || f.name.length > 200 || !Number.isSafeInteger(f.size) || f.size <= 0)) throw new AppError("invalid_input", "파일 이름과 용량을 확인해 주세요.", 400);
   if (files.some(f => !TYPES.includes(f.mediaType))) throw new AppError("unsupported_file", "PDF, HWP, HWPX, JPG, PNG, WEBP, GIF 파일을 지원해요.", 415);
   if (files.some(f => !f.mediaType.startsWith("image/")) && files.length !== 1) throw new AppError("invalid_input", "PDF·한글 문서는 한 번에 한 개만 올려 주세요.", 400);
-  if (files.reduce((sum, f) => sum + f.size, 0) > maxBytes || files.some(f => f.mediaType.startsWith("image/") && f.size > 5 * 1024 * 1024)) throw new AppError("too_large", "파일이 너무 커요. 문서는 25MB, 사진은 장당 5MB·합계 25MB까지 올릴 수 있어요.", 413);
+  if (files.reduce((sum, f) => sum + f.size, 0) > maxBytes || files.some(f => f.mediaType.startsWith("image/") && f.size > 5 * 1024 * 1024)) throw new AppError("too_large", `파일이 너무 커요. 문서는 ${maxBytes / 1024 / 1024}MB, 사진은 장당 5MB·합계 ${maxBytes / 1024 / 1024}MB까지 올릴 수 있어요.`, 413);
 }
 
 export function matchesSignature(type: string, b: Buffer) {
@@ -62,7 +63,7 @@ export async function inspectPdf(file: InputFile, signal: AbortSignal): Promise<
   try {
     signal.throwIfAborted();
     const doc = await task.promise;
-    if (doc.numPages > 100) throw new AppError("too_many_pages", "PDF는 100쪽 이하로 나눠 올려 주세요.", 413);
+    if (doc.numPages > MAX_DOCUMENT_PAGES) throw new AppError("too_many_pages", `PDF는 ${MAX_DOCUMENT_PAGES}쪽까지 분석할 수 있어요. 나눠 올려 주세요.`, 413);
     const pages = [];
     let chars = 0;
     for (let i = 1; i <= doc.numPages; i++) {
@@ -70,7 +71,7 @@ export async function inspectPdf(file: InputFile, signal: AbortSignal): Promise<
       const page = await doc.getPage(i), content = await page.getTextContent();
       const items = content.items.map((item) => "str" in item ? item.str : "");
       chars += items.reduce((s, v) => s + v.length, 0);
-      if (chars > 200_000) throw new AppError("too_long", "문서 내용이 너무 길어요. 필요한 공고문 부분만 나눠 올려 주세요.", 413);
+      if (chars > MAX_EXTRACTED_CHARS) throw new AppError("too_long", "추출한 본문이 100만 자를 넘어요. 공고문을 나눠 올려 주세요.", 413);
       pages.push({ page: i, items });
       page.cleanup();
     }

@@ -88,9 +88,16 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
   });
   // Meeting personal criteria does not reopen an expired application period.
   if (expired && overall === "likely_eligible") overall = "needs_check";
-  const checklist = match.checklist.filter((t) => overall !== "likely_ineligible" || (t.kind !== "document" && t.kind !== "apply"));
+  const checklist = match.checklist.filter((t) => (!expired && overall !== "likely_ineligible") || (t.kind !== "document" && t.kind !== "apply"));
+  if (expired) {
+    let id = "verify_reopening";
+    let n = 1;
+    while (checklist.some(t => t.id === id)) id = `verify_reopening_${n++}`;
+    checklist.unshift({ id, title: "추가 모집 여부 확인", detail: "기존 접수는 마감됐어요. 담당 기관에 추가 모집 여부와 새 접수 기간을 확인한 뒤 준비해 주세요.", kind: "verify", due_date_iso: null, document_id: null, priority: "high" });
+    checklist.splice(100);
+  }
   // Supplement application tasks only when no required or exclusion condition has failed.
-  if (overall !== "likely_ineligible") {
+  if (!expired && overall !== "likely_ineligible") {
     const freshId = () => { let n = checklist.length + 1; while (checklist.some((t) => t.id === `t${n}`)) n++; return `t${n}`; };
     for (const doc of a.documents.filter((d) => d.necessity === "required")) {
       if (!checklist.some((t) => t.document_id === doc.id && t.kind === "document")) checklist.push({
@@ -105,7 +112,10 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
   }
   const order = { verify: 0, document: 1, apply: 2, schedule: 3 };
   checklist.sort((x, y) => order[x.kind] - order[y.kind]);
-  const result = MatchSchema.safeParse({ overall, overall_message: `${expired ? "공고문에 적힌 접수 마감일이 모두 지났어요. 추가 모집 여부를 확인해 주세요. " : ""}${messages[overall]}`, criteria, checklist, next_searches: nextSearches.filter((s) => failedRequiredIds.has(s.criterion_id)) });
+  const overallMessage = expired
+    ? `공고문에 적힌 접수 마감일이 모두 지났어요. 추가 모집 여부와 새 접수 기간을 먼저 확인해 주세요.${overall === "likely_ineligible" ? " 입력한 조건에도 미충족 항목이 있어요." : ""}`
+    : messages[overall];
+  const result = MatchSchema.safeParse({ overall, overall_message: overallMessage, criteria, checklist, next_searches: nextSearches.filter((s) => failedRequiredIds.has(s.criterion_id)) });
   if (!result.success) throw invalidOutput();
   return result.data;
 }

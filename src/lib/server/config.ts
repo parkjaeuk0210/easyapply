@@ -1,5 +1,7 @@
 export const isHosted = () => process.env.VERCEL === "1";
 export const isProduction = () => process.env.NODE_ENV === "production" || isHosted();
+// This app is for judging: usage quotas are opt-in, not the default.
+export const usageLimitsEnabled = () => process.env.EASYAPPLY_USAGE_LIMITS === "on";
 
 export function openAIConfig() {
   const efforts = ["none", "low", "medium", "high", "xhigh", "max"] as const;
@@ -44,8 +46,12 @@ export function configurationIssues(): string[] {
       if (!/^https?:$/.test(u.protocol) || u.origin !== process.env.EASYAPPLY_APP_ORIGIN) issues.push("app_origin");
     }
     intEnv("EASYAPPLY_REQUEST_TIMEOUT_MS", 240_000, 1000, 260_000);
-    intEnv("EASYAPPLY_DAILY_AI_LIMIT", 100, 1, 100_000);
-    intEnv("EASYAPPLY_MAX_CONCURRENT", 3, 1, 20);
+    if (usageLimitsEnabled()) {
+      intEnv("EASYAPPLY_DAILY_AI_LIMIT", 100, 1, 100_000);
+      intEnv("EASYAPPLY_DAILY_IP_AI_LIMIT", 20, 1, 100_000);
+      intEnv("EASYAPPLY_DAILY_SESSION_AI_LIMIT", 20, 1, 100_000);
+      intEnv("EASYAPPLY_MAX_CONCURRENT", 3, 1, 20);
+    }
   } catch { issues.push("limits"); }
   try { openAIConfig(); } catch { issues.push("openai_settings"); }
   return [...new Set(issues)];

@@ -6,8 +6,9 @@ import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import type { z } from "zod";
+import { z } from "zod";
 import { toOutputSchema } from "./schema";
+import { DEFAULT_OUTPUT_TOKENS } from "./llm-limits";
 import { AppError } from "./server/errors";
 import { intEnv, isHosted, isProduction, openAIConfig } from "./server/config";
 
@@ -70,6 +71,8 @@ export async function runStructured<S extends z.ZodType>(opts: Options<S>): Prom
     if (opts.signal?.aborted) throw new AppError("cancelled", "요청을 취소했어요.", 499);
     if (timeout.signal.aborted) throw new AppError("timeout", "분석 시간이 너무 오래 걸렸어요. 필요한 쪽만 나눠 다시 올려 주세요.", 504);
     if (e instanceof AppError) throw e;
+    const parseError = e instanceof OpenAI.OpenAIError ? e.cause : e;
+    if (parseError instanceof z.ZodError || parseError instanceof SyntaxError) throw new AppError("bad_output", "AI 결과 형식이 올바르지 않아요. 다시 시도해 주세요.", 502);
     throw mapApiError(e);
   } finally { clearTimeout(timer); }
 }
@@ -88,16 +91,19 @@ async function viaOpenAI(opts: Options, signal: AbortSignal): Promise<unknown> {
   content.push({ type: "input_text", text: opts.text });
   const response = await client.responses.stream({
     ...settings, instructions: opts.system, store: false,
-    max_output_tokens: opts.maxTokens ?? 16_000,
+    max_output_tokens: opts.maxTokens ?? DEFAULT_OUTPUT_TOKENS,
     input: [{ role: "user", content }], text: { format: zodTextFormat(opts.schema, "easyapply_result") },
   }, { signal }).finalResponse();
-  if (response.output.some((o) => o.type === "message" && o.content.some((c) => c.type === "refusal"))) throw new AppError("refusal", "AI가 이 문서를 분석하지 못했어요. 다른 공고문으로 시도해 주세요.", 422);
-  if (response.status !== "completed") throw new AppError("incomplete", "AI 분석이 끝나지 않았어요. 필요한 쪽만 나눠 다시 시도해 주세요.", 502);
   console.info(JSON.stringify({ event: "ai_usage", provider: "openai", model: response.model,
+    status: response.status, stop_reason: response.incomplete_details?.reason ?? null,
+    max_output_tokens: opts.maxTokens ?? DEFAULT_OUTPUT_TOKENS,
     requested_reasoning_effort: settings.reasoning.effort, reasoning_effort: response.reasoning?.effort ?? null,
     requested_service_tier: settings.service_tier, service_tier: response.service_tier ?? null,
     input_tokens: response.usage?.input_tokens, output_tokens: response.usage?.output_tokens,
     reasoning_tokens: response.usage?.output_tokens_details?.reasoning_tokens ?? null }));
+  if (response.output.some((o) => o.type === "message" && o.content.some((c) => c.type === "refusal"))) throw new AppError("refusal", "AI가 이 문서를 분석하지 못했어요. 다른 공고문으로 시도해 주세요.", 422);
+  if (response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens") throw outputLimitError();
+  if (response.status !== "completed") throw new AppError("incomplete", "AI 분석이 끝나지 않았어요. 잠시 후 다시 시도해 주세요.", 502);
   try { return JSON.parse(response.output_text); }
   catch { throw new AppError("bad_output", "AI 응답을 읽지 못했어요.", 502); }
 }
@@ -114,7 +120,7 @@ async function viaApi(opts: Options, signal: AbortSignal, effort: Effort): Promi
   }
   content.push({ type: "text", text: opts.text });
   const message = await client.messages.stream({
-    model: MODEL, max_tokens: opts.maxTokens ?? 16_000, speed,
+    model: MODEL, max_tokens: opts.maxTokens ?? DEFAULT_OUTPUT_TOKENS, speed,
     system: `${opts.system}\n\nReturn the complete final result by calling easyapply_result exactly once.`,
     output_config: { effort },
     // The full analysis exceeds Anthropic's strict grammar limit. Tool input
@@ -123,17 +129,23 @@ async function viaApi(opts: Options, signal: AbortSignal, effort: Effort): Promi
     tool_choice: { type: "auto", disable_parallel_tool_use: true },
     messages: [{ role: "user", content }],
   }, { signal }).finalMessage();
-  if (message.stop_reason === "refusal") throw new AppError("refusal", "AI가 이 문서를 분석하지 못했어요. 다른 공고문으로 시도해 주세요.", 422);
-  if (message.stop_reason === "max_tokens") throw new AppError("too_long", "결과가 너무 길어 잘렸어요. 필요한 쪽만 나눠 올려 주세요.", 413);
-  if (message.stop_reason !== "tool_use") throw new AppError("bad_output", "AI 분석이 끝나지 않았어요. 다시 시도해 주세요.", 502);
-  const results = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "easyapply_result");
-  if (results.length !== 1) throw new AppError("bad_output", "AI 응답을 읽지 못했어요. 다시 시도해 주세요.", 502);
   console.info(JSON.stringify({ event: "ai_usage", provider: "api", model: message.model,
+    stop_reason: message.stop_reason, max_output_tokens: opts.maxTokens ?? DEFAULT_OUTPUT_TOKENS,
     requested_reasoning_effort: effort, requested_speed: speed, speed: message.usage.speed,
     input_tokens: message.usage.input_tokens, output_tokens: message.usage.output_tokens,
     output_tokens_details: message.usage.output_tokens_details,
     cache_creation_input_tokens: message.usage.cache_creation_input_tokens, cache_read_input_tokens: message.usage.cache_read_input_tokens }));
+  if (message.stop_reason === "refusal") throw new AppError("refusal", "AI가 이 문서를 분석하지 못했어요. 다른 공고문으로 시도해 주세요.", 422);
+  if (message.stop_reason === "max_tokens") throw outputLimitError();
+  if (message.stop_reason !== "tool_use") throw new AppError("bad_output", "AI 분석이 끝나지 않았어요. 다시 시도해 주세요.", 502);
+  const results = message.content.filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use" && b.name === "easyapply_result");
+  if (results.length !== 1) throw new AppError("bad_output", "AI 응답을 읽지 못했어요. 다시 시도해 주세요.", 502);
   return results[0].input;
+}
+
+function outputLimitError() {
+  // This is a generation failure, not an oversized uploaded file (HTTP 413).
+  return new AppError("output_limit", "AI가 결과를 끝까지 생성하지 못했어요. 잠시 후 다시 시도해 주세요.", 502);
 }
 
 export function mapApiError(e: unknown): AppError {

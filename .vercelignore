@@ -1,0 +1,13 @@
+.env*
+!.env.example
+.git
+.next
+node_modules
+artifacts
+reports
+tests
+samples-src
+standalone
+dist
+*.log
+*.tsbuildinfo
