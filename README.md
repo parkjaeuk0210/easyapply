@@ -4,11 +4,11 @@
 
 운영 주소: **https://easyapply-five.vercel.app**. 2026-11-06 Vercel에서 실제 PDF/HWPX 분석과 자격 확인·체크리스트 생성을 검증했습니다. 검증 범위와 남는 제품 한계는 [PRODUCTION_AUDIT.md](PRODUCTION_AUDIT.md)에 기록했습니다.
 
-## 현재 운영 상태 (2026-11-07 00:40 KST 기준)
+## 현재 운영 상태 (2026-11-07 01:50 KST 기준)
 
 | 항목 | 상태 |
 |---|---|
-| 배포 | 최신 배포는 Vercel 대시보드 기준입니다 |
+| 배포 | 공개 주소가 Production `dpl_AqPskTwmhsxq8SyreEziJjVm7Z5p`(11-07 01:46:41 생성, 01:47 승격)를 가리킵니다. 소스는 00:36 배포(`dpl_5eQuXZrXd5P6SaEsGtDUjqkmvXBC`)에 첫 화면 중간안(태그줄·제목·설명·예시 카드 복원)을 더한 `release-landing` 브랜치(태그 `prod-20261107-0146`)입니다. 01:00~01:28 서버 결함 수리분(main)은 독립 검토에서 차단 결함 3건이 나와 아직 배포하지 않았습니다 |
 | AI | Anthropic API(`EASYAPPLY_PROVIDER=api`, 상태 API `provider:"api"`), `claude-opus-5-5`, 추론 `medium`, 처리 속도 `fast`. OpenAI 키도 등록되어 있지만 사용하지 않습니다 |
 | 호출 한도 | **해제.** Production에 `EASYAPPLY_USAGE_LIMITS`가 없어(상태 API `usage_limits_enabled:false`) 같은 세션의 중복 실행 방지만 적용합니다 |
 | 업로드·형식 | 합계 상한은 공급자별(Anthropic 22 MiB, OpenAI·로컬 24 MiB, 4 MiB 초과는 비공개 Blob 직접 업로드), 사진 10장·장당 5 MiB. PDF·HWP·HWPX·JPG·PNG·WEBP·GIF |

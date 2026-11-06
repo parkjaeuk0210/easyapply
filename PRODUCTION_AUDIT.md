@@ -2,11 +2,11 @@
 
 점검일: 2026-11-06. 대상: `/Users/online/easyapply`의 Next.js 앱.
 
-## 현재 운영 상태 (2026-11-07 00:40 KST 기준)
+## 현재 운영 상태 (2026-11-07 01:50 KST 기준)
 
 이 절만 현재 사실입니다. 아래 절들은 작성 당시의 기록이며 그 안의 OpenAI 모델·테스트 수·한도 수치는 당시 값입니다.
 
-- 배포: 공개 주소 https://easyapply-five.vercel.app 의 최신 배포는 Vercel 대시보드 기준입니다.
+- 배포: 공개 주소 https://easyapply-five.vercel.app 은 Production `dpl_AqPskTwmhsxq8SyreEziJjVm7Z5p`(11-07 01:46:41 생성, 01:47 승격)를 가리킵니다. 소스는 00:36 배포 `dpl_5eQuXZrXd5P6SaEsGtDUjqkmvXBC`의 소스에 첫 화면 중간안(`src/components/EasyApp.tsx`만 변경)을 더한 `release-landing` 브랜치(태그 `prod-20261107-0146`)입니다. 승격 전 확인: 테스트 112/112, 타입체크, 린트, 상태 API configured, 첫 화면 HTML에 태그줄 포함·제공자 배지 없음. 승격 직후 공개 주소에서 실제 공고(화성 PDF)로 분석 200(40.1초)·판정 200(9.4초), 페이지 오류 0건. main의 서버 결함 수리분(1fce5a5, 01:00~01:28)은 독립 검토(Codex)에서 차단 결함 3건(연령 계산이 다른 미충족을 덮음, 수선이 필수 조건을 삭제, 상시 모집 시작일을 마감으로 확정)이 나와 수정 전까지 배포하지 않습니다. 되돌리기: `vercel promote https://easyapply-58d14v5vm-feras-projects-59a977f0.vercel.app`(00:36 빌드).
 - AI: Anthropic API `claude-opus-5-5`, 추론 `medium`, 처리 속도 `fast`(23:00 상태 API `provider:"api"`, `ready:true`). Production에는 `OPENAI_API_KEY`와 OpenAI 설정 3개도 남아 있지만 `EASYAPPLY_PROVIDER=api`라 사용하지 않습니다.
 - 호출 한도: **해제**(`usage_limits_enabled:false`). Production에 `EASYAPPLY_USAGE_LIMITS`, `EASYAPPLY_DAILY_IP_AI_LIMIT`, `EASYAPPLY_DAILY_SESSION_AI_LIMIT`, `EASYAPPLY_ACCESS_CODE`가 없어 이용 코드 없이 세션을 받고, Redis로 같은 세션의 중복 실행만 막습니다. 켜려면 `EASYAPPLY_USAGE_LIMITS=on`을 추가하고 재배포합니다. 이때 IP·세션별 10분당 분석 8회·판정 24회는 코드 고정값(`src/lib/server/guard.ts`의 `quota()`)이라 같은 Wi-Fi의 심사위원들이 함께 걸릴 수 있습니다. 전체 일일·동시 한도는 등록된 `EASYAPPLY_DAILY_AI_LIMIT`·`EASYAPPLY_MAX_CONCURRENT` 값을, IP·세션별 24시간 한도는 기본 20회를 따릅니다.
 - 업로드·형식: 합계 상한은 공급자별(Anthropic 22 MiB, OpenAI·로컬 24 MiB), 함수 직접 전송 4 MiB, 초과분은 비공개 Blob(`large_uploads:true`). PDF·HWP·HWPX·JPG·PNG·WEBP·GIF.
