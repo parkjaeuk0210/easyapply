@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 
 /** Native modal on small screens; a persistent side panel on desktop. */
 export default function SourcePanel({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
@@ -16,7 +16,9 @@ export default function SourcePanel({ open, onClose, children }: { open: boolean
     return () => media.removeEventListener("change", update);
   }, []);
 
-  useEffect(() => {
+  // 레이아웃 효과로 연다: 원문 뷰어의 '근거 위치로 스크롤'(일반 효과)보다 먼저 창이 열려 있어야
+  // 스크롤할 화면이 생긴다. 닫힌 창에서 스크롤하면 무시돼 휴대폰에서 늘 첫 쪽이 보였다.
+  useLayoutEffect(() => {
     const dialog = dialogRef.current;
     if (!dialog) return;
     if (open && !dialog.open) dialog.showModal();
