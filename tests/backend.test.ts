@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { AnalysisSchema, MatchSchema, toOutputSchema } from '../src/lib/schema';
 import { assertOrigin, readBody } from '../src/lib/server/http';
 import { createSession, session, signAnalysis, verifyAnalysis } from '../src/lib/server/tokens';
-import { acquireAI, limitAttempts } from '../src/lib/server/guard';
+import { acquireAI, limitAttempts, SESSION_SLOTS } from '../src/lib/server/guard';
 import { validateAnalysis, validateAnswers, finalizeMatch, settleApplication } from '../src/lib/server/validation';
 import { matchesSignature, readUploads, inspectPdf, verifyEvidence } from '../src/lib/server/uploads';
 import { detectProvider, runStructured } from '../src/lib/llm';
@@ -184,10 +184,13 @@ test('real PDF preflight reads pages and independently detects invented quotes',
   const v=verifyEvidence(a,result.index); assert(v.exact>0); assert(v.unverified_criteria.includes(a.eligibility[0].id));
   assert.equal(verifyEvidence(a,null).exact,0);
 });
-test('concurrency lease blocks duplicates and releases on completion',async()=>{
-  const r=req(); const id=crypto.randomUUID(); const release=await acquireAI(r,id,'analyze');
+test('a session runs at most SESSION_SLOTS AI calls at once and gets a slot back on completion',async()=>{
+  const r=req(); const id=crypto.randomUUID();
+  const held=[]; for(let i=0;i<SESSION_SLOTS;i++) held.push(await acquireAI(r,id,'analyze'));
   await assert.rejects(acquireAI(r,id,'match'),(e:AppError)=>e.code==='in_progress');
-  await release(); await release(); const next=await acquireAI(r,id,'match'); await next();
+  await held[0](); await held[0](); held[0]=await acquireAI(r,id,'match');
+  await assert.rejects(acquireAI(r,id,'analyze'),(e:AppError)=>e.code==='in_progress');
+  for(const release of held) await release();
 });
 test('login throttling works independently of session cookies',async()=>{
   process.env.EASYAPPLY_USAGE_LIMITS='on';
