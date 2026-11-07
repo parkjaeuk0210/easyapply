@@ -151,7 +151,8 @@ function PdfPane({
   const [error, setError] = useState<string | null>(null);
   const completedMarkJump = useRef<string | null>(null);
   const completedPageJump = useRef<string | null>(null);
-  const jumpKey = active ? `${active.key}:${zoom}` : null;
+  // 휴대폰 원문 시트는 닫혀 있는 동안 폭이 0이라 쪽 위치가 없다. 시트가 열려 폭이 생기면 한 번 더 이동한다.
+  const jumpKey = active ? `${active.key}:${zoom}:${width > 0 ? "shown" : "hidden"}` : null;
   const pageEl = useCallback(
     (page: number) => scrollRef.current?.querySelector<HTMLElement>(`[data-page="${page}"]`) ?? null,
     [scrollRef],
