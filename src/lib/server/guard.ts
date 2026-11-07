@@ -41,7 +41,7 @@ function ipBucket(ip: string) {
   return `${groups.slice(0, 4).map((g) => g.padStart(4, "0")).join(":")}::/64`;
 }
 
-async function redis(command: (string | number)[]): Promise<unknown> {
+export async function redis(command: (string | number)[]): Promise<unknown> {
   const { url, token } = redisConfig();
   if (!url || !token) throw new AppError("rate_limit_unavailable", "요청량 확인에 실패했어요. 잠시 후 다시 시도해 주세요.", 503);
   try {

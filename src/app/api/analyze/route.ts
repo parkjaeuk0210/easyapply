@@ -14,6 +14,7 @@ import type { TextIndex } from "@/lib/textmatch";
 import { isLoopbackRequest } from "@/lib/server/http";
 import { readJson } from "@/lib/server/http";
 import { consumeUploads, uploadManifest } from "@/lib/server/staged-uploads";
+import { cacheKey, readCache, writeCache } from "@/lib/server/analysis-cache";
 
 export const maxDuration = 300;
 export async function POST(req: Request) {
@@ -40,6 +41,15 @@ export async function POST(req: Request) {
       release = await acquireAI(req, sid, "analyze");
     }
     const first = files[0], pdf = first.mediaType === "application/pdf";
+    // 같은 파일을 7일 안에 분석했다면 그 결과를 다시 쓴다. AI를 부르지 않고 사용량도 차감하지 않는다.
+    const key = cacheKey(files);
+    const hit = key ? await readCache(key) : null;
+    if (hit) {
+      settleApplication(hit.analysis, hit.verification.unverified_schedule);
+      const source = hit.source ? { ...hit.source, name: first.name } : undefined;
+      console.info(JSON.stringify({ event: "analyze_cache_hit", request_id: requestId, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started }));
+      return json({ analysis: hit.analysis, analysis_token: signAnalysis(hit.analysis, sid, hit.verification.unverified_criteria), verification: hit.verification, source, provider, cached: true, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
+    }
     const hangul = ["application/x-hwp", "application/hwp+zip"].includes(first.mediaType);
     let index: TextIndex | null = null, count = files.length;
     let extracted: Awaited<ReturnType<typeof extractHangul>> | null = null;
@@ -59,8 +69,9 @@ export async function POST(req: Request) {
     if (extracted?.uncertainLayout) verification.unverified_criteria = analysis.eligibility.map(c => c.id);
     settleApplication(analysis, verification.unverified_schedule);
     const source = extracted ? { kind: "text", name: first.name, sections: extracted.sections, warning: extracted.warning } : undefined;
+    if (key) await writeCache(key, { analysis, verification, source, analyzed_at: new Date().toISOString() });
     console.info(JSON.stringify({ event: "analyze_complete", request_id: requestId, provider: used, elapsed_ms: Date.now() - started, verification: { ...verification, page_corrections_count: verification.page_corrections.length, page_corrections: verification.page_corrections.map(({ page, found_page }) => ({ page, found_page })) } }));
-    return json({ analysis, analysis_token: signAnalysis(analysis, sid, verification.unverified_criteria), verification, source, provider: used, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
+    return json({ analysis, analysis_token: signAnalysis(analysis, sid, verification.unverified_criteria), verification, source, provider: used, cached: false, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
   } catch (e) {
     const response = errorResponse(e, requestId);
     if (staged && !consumingUpload && e instanceof AppError && ["rate_limit", "daily_limit", "in_progress", "rate_limit_unavailable"].includes(e.code)) {
