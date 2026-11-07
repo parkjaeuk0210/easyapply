@@ -66,10 +66,11 @@ test('missing or uncertain cited answers cannot establish a partial-answer failu
   }
 });
 
-test('partial answers cannot become met and failures without cited answers are no longer accepted', () => {
+test('met needs at least one real answer; failures without cited answers are no longer accepted', () => {
   const { analysis, match, answers } = fixture();
   match.criteria[0].status = 'met';
-  assert.equal(finalizeMatch(analysis, answers, match).criteria[0].status, 'check');
+  assert.equal(finalizeMatch(analysis, answers, match).criteria[0].status, 'met');
+  assert.equal(finalizeMatch(analysis, {}, match).criteria[0].status, 'check');
   match.criteria[0].status = 'not_met'; match.criteria[0].failed_answer_ids = [];
   assert.equal(finalizeMatch(analysis, { ...answers, q2: '2년' }, match).criteria[0].status, 'check');
 });

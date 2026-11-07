@@ -345,9 +345,9 @@ export default function EasyApp() {
 
             {stage === "result" && analysis && (
               <EvidenceContext.Provider value={evCtx}>
-                <ResultHeader a={analysis} note={resultNote} matched={!!match} onCheck={tab !== "mine" ? () => goTab("mine") : undefined} />
+                <ResultHeader a={analysis} note={resultNote} matched={!!match} onCheck={tab !== "mine" && !expired ? () => goTab("mine") : undefined} />
                 <div ref={topRef} className="scroll-mt-16" />
-                <Tabs tab={tab} onTab={goTab} match={match} matching={matching} />
+                <Tabs tab={tab} onTab={goTab} match={match} matching={matching} closed={expired} />
                 <div id="tab-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="mt-4">
                   {tab === "overview" && <OverviewPanel a={analysis} />}
                   {tab === "eligibility" && <EligibilityPanel a={analysis} />}
@@ -370,7 +370,7 @@ export default function EasyApp() {
                     />
                   )}
                 </div>
-                {tab !== "mine" && (match || !expired) && (
+                {tab !== "mine" && !expired && (
                   <button
                     type="button"
                     onClick={() => goTab("mine")}
@@ -611,7 +611,12 @@ function ResultHeader({ a, note, matched, onCheck }: { a: Analysis; note: string
   const expired = !!deadline?.expired;
   return (
     <section aria-labelledby="result-title" className="rounded-2xl border border-line bg-surface p-5 sm:p-6">
-      {expired && <p className="mb-3 text-[16px] font-semibold text-bad">{deadline!.text}</p>}
+      {expired && (
+        <div role="status" className="mb-4 rounded-xl bg-bad-soft px-4 py-3 text-bad">
+          <p className="text-[17px] font-bold">접수가 이미 끝난 공고예요</p>
+          <p className="mt-1 text-[15px] leading-relaxed">{deadline!.text} 내용은 볼 수 있지만, 신청할 수 있는지 확인하기는 쓸 수 없어요.</p>
+        </div>
+      )}
       {a.organization && <p className="text-[15px] text-ink-2">{a.organization}</p>}
       <h1 id="result-title" className="mt-1 text-[22px] font-extrabold leading-snug tracking-[-0.01em] text-ink sm:text-[26px]">{a.title}</h1>
       <p className="mt-2 text-[16px] leading-relaxed text-ink-2">{a.one_line}</p>
@@ -648,9 +653,10 @@ const TABS: [Tab, string][] = [
   ["glossary", "용어 풀이"],
 ];
 
-function Tabs({ tab, onTab, match, matching }: { tab: Tab; onTab: (t: Tab) => void; match: Match | null; matching: boolean }) {
+function Tabs({ tab, onTab, match, matching, closed }: { tab: Tab; onTab: (t: Tab) => void; match: Match | null; matching: boolean; closed: boolean }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
-  const enabled = (k: Tab) => !matching || k === "mine";
+  // 접수가 끝난 공고는 내 조건 입력을 막는다.
+  const enabled = (k: Tab) => (k === "mine" ? !closed : !matching);
   const keyDown = (e: React.KeyboardEvent, i: number) => {
     const step = e.key === "ArrowRight" ? 1 : e.key === "ArrowLeft" ? -1 : 0;
     if (!step && e.key !== "Home" && e.key !== "End") return;
@@ -667,7 +673,7 @@ function Tabs({ tab, onTab, match, matching }: { tab: Tab; onTab: (t: Tab) => vo
       <div role="tablist" aria-label="공고 내용" className="scrollbar-thin flex gap-1 overflow-x-auto py-2">
         {TABS.map(([k, name], i) => {
           const on = tab === k;
-          const label = k === "mine" ? (matching ? "확인 중…" : match ? "내 결과" : name) : name;
+          const label = k === "mine" ? (closed ? "접수 마감" : matching ? "확인 중…" : match ? "내 결과" : name) : name;
           return (
             <button
               key={k}
