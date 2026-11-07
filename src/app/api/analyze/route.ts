@@ -42,20 +42,24 @@ export async function POST(req: Request) {
       release = await acquireAI(req, sid, "analyze");
     }
     const first = files[0], pdf = first.mediaType === "application/pdf";
-    // 같은 파일을 7일 안에 분석했다면 그 결과를 다시 쓴다. AI를 부르지 않고 사용량도 차감하지 않는다.
-    const key = cacheKey(files);
-    const hit = key ? await readCache(key) : null;
-    if (hit) {
-      settleApplication(hit.analysis, hit.verification.unsure_schedule ?? hit.verification.unverified_schedule);
-      const source = hit.source ? { ...hit.source, name: first.name } : undefined;
-      console.info(JSON.stringify({ event: "analyze_cache_hit", request_id: requestId, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started }));
-      return json({ analysis: hit.analysis, analysis_token: signAnalysis(hit.analysis, sid, hit.verification.flags ?? hit.verification.unverified_criteria), verification: hit.verification, source, provider, cached: true, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
-    }
     const hangul = ["application/x-hwp", "application/hwp+zip"].includes(first.mediaType);
     let index: TextIndex | null = null, count = files.length;
     let extracted: Awaited<ReturnType<typeof extractHangul>> | null = null;
     if (pdf) { const inspected = await inspectPdf(first, req.signal); index = inspected.index; count = inspected.pages; }
     if (hangul) { extracted = await extractHangul(first, req.signal); index = extracted.index; count = extracted.sections.length; }
+    // 같은 파일을 7일 안에 분석했다면 그 결과를 다시 쓴다. AI를 부르지 않고 사용량도 차감하지 않는다.
+    // 원문 대조 표시는 저장된 값을 믿지 않고 지금 기준으로 다시 계산한다(대조 규칙이 바뀌어도 바로 반영되게).
+    const key = cacheKey(files);
+    const hit = key ? await readCache(key) : null;
+    if (hit) {
+      const verification = { ...hit.verification,
+        flags: buildFlags(hit.analysis, hit.verification, !!extracted?.images, index),
+        unsure_schedule: hit.verification.unverified_schedule.filter((i) => !numbersFound(hit.analysis.schedule[i].evidence, index)) };
+      settleApplication(hit.analysis, verification.unsure_schedule);
+      const source = hit.source ? { ...hit.source, name: first.name } : undefined;
+      console.info(JSON.stringify({ event: "analyze_cache_hit", request_id: requestId, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started }));
+      return json({ analysis: hit.analysis, analysis_token: signAnalysis(hit.analysis, sid, verification.flags), verification, source, provider, cached: true, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
+    }
     const text = extracted
       ? `오늘은 ${todayKST()}입니다. 한글 공고문에서 추출한 본문을 분석하세요. page는 아래 구역 번호이며 실제 쪽수는 아닙니다. transcript는 빈 배열로 두세요. 표 셀 연결이 모호하면 추측하지 말고 reading_notes에 명시하세요.\n${extracted.warning}\n\n${extracted.sections.map(s => `=== ${s.page}구역 ===\n${s.text}`).join("\n\n")}`
       : analyzeUserText({ kind: pdf ? "pdf" : "images", count: files.length, today: todayKST() });
