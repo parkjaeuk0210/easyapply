@@ -14,6 +14,7 @@ import { deadlineInfo, EvidenceContext, evidenceId, Logo, Spinner } from "./ui";
 import { CautionsPanel, DocumentsPanel, EligibilityPanel, GlossaryPanel, OverviewPanel } from "./AnalysisPanels";
 import ProfileCheck from "./ProfileCheck";
 import Finder, { type AnalyzeResponse } from "./Finder";
+import { SIDO_OPTIONS, type Profile } from "@/lib/finder";
 import SourcePanel from "./SourcePanel";
 
 const SourceViewer = dynamic(() => import("./SourceViewer"), {
@@ -111,19 +112,27 @@ export default function EasyApp() {
   };
 
   // 맞춤 공고 찾기에서 이미 받은 분석으로 상세 화면을 연다(다시 호출하지 않는다).
-  const openFound = (file: File, j: AnalyzeResponse) => {
+  const openFound = (file: File, j: AnalyzeResponse, profile: Profile) => {
     operation.current++;
     controller.current?.abort();
     const src: Source = j.source?.kind === "text" ? { ...j.source, originalFile: file } : { kind: "pdf", url: URL.createObjectURL(file), name: file.name };
+    const found = AnalysisSchema.parse(j.analysis);
+    // 맞춤 찾기에서 이미 적은 생년월일·사는 곳은 다시 묻지 않도록 미리 채운다.
+    const place = [SIDO_OPTIONS.find((s) => s.key === profile.sido)?.name, profile.sigungu.trim()].filter(Boolean).join(" ");
+    const prefilled: Answers = {};
+    for (const q of found.profile_questions) {
+      if (q.input === "date" && profile.birth && /생년월일|출생|태어/.test(q.label)) prefilled[q.id] = profile.birth;
+      if (q.input === "text" && place && /거주|주소|사는 곳|주민등록|지역/.test(q.label)) prefilled[q.id] = place;
+    }
     filesRef.current = [file];
     setError(null);
     setSource(src);
-    setAnalysis(AnalysisSchema.parse(j.analysis));
+    setAnalysis(found);
     setAnalysisToken(j.analysis_token ?? null);
     setIndex(null);
     setActive(null);
     setMatch(null);
-    setAnswers({});
+    setAnswers(prefilled);
     setExtra("");
     setTab("overview");
     setStage("result");
@@ -323,7 +332,7 @@ export default function EasyApp() {
       </div>
 
       {stage === "upload" && menu === "analyze" && (
-        <UploadScreen onFiles={onFiles} error={error} status={status} extra={extra} onExtra={updateExtra} onRetryUpload={canRetryUpload ? retryUpload : undefined} onUnlock={async (code) => {
+        <UploadScreen onFiles={onFiles} error={error} status={status} onRetryUpload={canRetryUpload ? retryUpload : undefined} onUnlock={async (code) => {
           await fetch("/api/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) }).then(responseJson);
           setStatus(await fetch("/api/status", { cache: "no-store" }).then(responseJson));
         }} />
@@ -430,16 +439,12 @@ function UploadScreen({
   error,
   status,
   onUnlock,
-  extra,
-  onExtra,
   onRetryUpload,
 }: {
   onFiles: (f: FileList | File[]) => void;
   error: string | null;
   status: Status | null;
   onUnlock: (code: string) => Promise<void>;
-  extra: string;
-  onExtra: (value: string) => void;
   onRetryUpload?: () => void;
 }) {
   const [drag, setDrag] = useState(false);
@@ -473,12 +478,6 @@ function UploadScreen({
             </div>
             {unlockError && <p role="alert" className="mt-2 text-[15px] text-bad">{unlockError}</p>}
           </form>}
-
-          <details className="mt-6 rounded-xl border border-line bg-surface px-4 py-3">
-            <summary className="cursor-pointer text-[16px] font-semibold text-ink-2">내 상황 미리 적기 <span className="font-normal text-muted">(선택)</span></summary>
-            <label htmlFor="initial-profile" className="mt-3 block text-[15px] text-ink-2">나이, 사는 곳처럼 알고 있는 조건</label>
-            <textarea id="initial-profile" value={extra} onChange={e => onExtra(e.target.value)} rows={3} maxLength={2000} placeholder="예: 춘천 거주, 만 25세" className="mt-2 w-full resize-y rounded-xl border border-line bg-surface-2 px-3.5 py-2.5 text-[16px] outline-none focus:border-brand" />
-          </details>
 
           <div
             onDragOver={(e) => {

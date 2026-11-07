@@ -65,7 +65,9 @@ export async function POST(req: Request) {
       maxTokens: analysisOutputTokens(), requestId, deadline: started + REQUEST_BUDGET_MS, pages: count,
       validate: (result) => validateAnalysis(result, count),
     });
-    const verification = verifyEvidence(analysis, index);
+    const checked = verifyEvidence(analysis, index);
+    // 문장 하나하나의 원문 대조 결과. 아래 문서 단위 처리(표 구조 불확실) 전에 남겨 맞춤 공고 찾기가 쓴다.
+    const verification = { ...checked, unverified_quotes: [...checked.unverified_criteria] };
     if (extracted?.uncertainLayout) verification.unverified_criteria = analysis.eligibility.map(c => c.id);
     settleApplication(analysis, verification.unverified_schedule);
     const source = extracted ? { kind: "text", name: first.name, sections: extracted.sections, warning: extracted.warning } : undefined;
