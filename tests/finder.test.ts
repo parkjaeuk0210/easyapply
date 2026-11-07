@@ -90,10 +90,24 @@ test('중위소득 비율: 기준 안이면 충족, 10% 안쪽으로 넘으면 �
   assert.equal(one(c, { householdSize: 1, monthlyIncome: null }).verdict, 'check');
 });
 
-test('원문에서 확인되지 않은 조건은 충족으로도 불가로도 쓰지 않는다', () => {
-  const c = { category: '나이', rule: rule({ type: 'age', max_age: 34, age_basis_date: '2026-11-07' }) };
-  assert.equal(one(c, { birth: '1980-01-01' }, ['c1']).verdict, 'check');
-  assert.equal(one(c, { birth: '2000-01-01' }, ['c1']).verdict, 'check');
+test('원문 문장을 그대로 찾지 못한 조건: 분명히 맞으면 맞다고 하고, 안 맞는 판단만 확인 필요로 낮춘다', () => {
+  const c = { category: '나이', rule: rule({ type: 'age', min_age: 18, age_basis_date: '2026-10-28' }) };
+  assert.equal(one(c, { birth: '1998-06-01' }, ['c1']).verdict, 'eligible');
+  const young = one(c, { birth: '2010-01-01' }, ['c1']);
+  assert.equal(young.verdict, 'check');
+  assert.match(young.criteria[0].reason, /찾지 못했어요/);
+});
+
+test('규칙이 없는 제외 조건(세금 체납 등)은 남은 확인으로 세지 않는다', () => {
+  const a = notice([
+    { category: '재학', rule: rule({ type: 'education', education: ['college_student'] }) },
+    { category: '세금 체납', kind: 'exclusion', requirement: '국세·지방세 체납자', rule: null },
+  ]);
+  const r = evaluateNotice(a, [], person({ education: 'college_student' }), TODAY);
+  assert.equal(r.verdict, 'eligible');
+  assert.deepEqual(r.remaining, []);
+  assert.match(r.headline, /제외 대상만 아니면/);
+  assert.equal(r.criteria[0].status, 'met');
 });
 
 test('예외 조항이 있으면 범위를 넘어도 확인 필요', () => {

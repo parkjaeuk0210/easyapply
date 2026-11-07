@@ -16,12 +16,12 @@ import { deadlineInfo, Spinner } from "./ui";
 
 export type AnalyzeResponse = {
   analysis: unknown; analysis_token?: string | null;
-  verification?: { unverified_criteria?: string[] };
+  verification?: { unverified_criteria?: string[]; unverified_quotes?: string[] };
   source?: { kind: "text"; name: string; sections: { page: number; text: string }[]; warning: string };
   cached?: boolean; analyzed_at?: string;
 };
 type FinderStatus = { large_uploads?: boolean; max_direct_upload_bytes?: number; max_upload_bytes?: number };
-type Item = { id: number; file: File; state: "waiting" | "reading" | "done" | "failed"; error?: string; response?: AnalyzeResponse; analysis?: Analysis };
+type Item = { id: number; file: File; state: "ready" | "reading" | "done" | "failed"; error?: string; response?: AnalyzeResponse; analysis?: Analysis };
 
 const MAX_FILES = 5;
 const DOCS = ["application/pdf", "application/x-hwp", "application/hwp+zip"];
@@ -49,7 +49,7 @@ function ago(iso?: string) {
   return hours < 1 ? "1시간 안에" : hours < 24 ? `${hours}시간 전` : `${Math.round(hours / 24)}일 전`;
 }
 
-export default function Finder({ status, canRunAI, onOpen }: { status: FinderStatus | null; canRunAI: boolean; onOpen: (file: File, response: AnalyzeResponse) => void }) {
+export default function Finder({ status, canRunAI, onOpen }: { status: FinderStatus | null; canRunAI: boolean; onOpen: (file: File, response: AnalyzeResponse, profile: Profile) => void }) {
   const [step, setStep] = useState<"profile" | "notices">("profile");
   const [profile, setProfile] = useState<Profile>(EMPTY_PROFILE);
   const [items, setItems] = useState<Item[]>([]);
@@ -81,13 +81,13 @@ export default function Finder({ status, canRunAI, onOpen }: { status: FinderSta
     const limit = status?.max_upload_bytes ?? MAX_UPLOAD_BYTES;
     if (files.some((f) => f.size > limit)) return setError("너무 큰 파일이 있어요. 필요한 쪽만 따로 저장해서 올려 주세요.");
     if (!canRunAI) return setError("지금은 분석을 할 수 없어요. 잠시 후 다시 시도해 주세요.");
-    const added: Item[] = files.map((file) => ({ id: nextId.current++, file, state: "waiting" }));
-    setItems((list) => [...list, ...added]);
-    run(added);
+    // 고르기만 하고, '분석 시작'을 눌러야 읽기 시작한다.
+    setItems((list) => [...list, ...files.map((file): Item => ({ id: nextId.current++, file, state: "ready" }))]);
   };
+  const ready = items.filter((i) => i.state === "ready");
 
   const ranked = useMemo(() => rankNotices(
-    items.filter((i) => i.state === "done" && i.analysis).map((i) => ({ item: i, result: evaluateNotice(i.analysis!, i.response?.verification?.unverified_criteria ?? [], profile, today) })),
+    items.filter((i) => i.state === "done" && i.analysis).map((i) => ({ item: i, result: evaluateNotice(i.analysis!, i.response?.verification?.unverified_quotes ?? i.response?.verification?.unverified_criteria ?? [], profile, today) })),
     today,
   ), [items, profile, today]);
   const pending = items.filter((i) => i.state !== "done");
@@ -154,7 +154,7 @@ export default function Finder({ status, canRunAI, onOpen }: { status: FinderSta
   return (
     <section aria-labelledby="finder-results" className="mx-auto max-w-[760px]">
       <div className="flex flex-wrap items-end justify-between gap-2">
-        <h1 id="finder-results" className="text-[24px] font-extrabold tracking-[-0.02em] text-ink sm:text-[28px]">{items.length ? "맞는 공고부터 보여 드려요" : "공고 파일을 올려 주세요"}</h1>
+        <h1 id="finder-results" className="text-[24px] font-extrabold tracking-[-0.02em] text-ink sm:text-[28px]">{ranked.length ? "맞는 공고부터 보여 드려요" : "공고 파일을 올려 주세요"}</h1>
         <button type="button" onClick={() => setStep("profile")} className="rounded-xl border border-line px-3 py-2 text-[15px] font-semibold text-ink-2 hover:bg-surface-2">내 상황 고치기</button>
       </div>
 
@@ -162,8 +162,8 @@ export default function Finder({ status, canRunAI, onOpen }: { status: FinderSta
         <div onDragOver={(e) => e.preventDefault()} onDrop={(e) => { e.preventDefault(); add(e.dataTransfer.files); }}
           className="mt-4 rounded-2xl border-2 border-dashed border-line-strong bg-surface px-5 py-6 text-center">
           <p className="text-[16px] font-semibold text-ink">PDF·한글 공고를 {items.length ? `${MAX_FILES - items.length}개 더` : `${MAX_FILES}개까지`} 올릴 수 있어요</p>
-          <p className="mt-1 text-[15px] text-ink-2">공고마다 AI가 따로 읽어요. 하나에 1분 안팎 걸려요.</p>
-          <button type="button" onClick={() => input.current?.click()} className="mt-3 rounded-xl bg-brand px-6 py-3 text-[16px] font-bold text-white transition hover:bg-brand-ink">파일 선택</button>
+          <p className="mt-1 text-[15px] text-ink-2">다 고른 뒤 &apos;분석 시작&apos;을 누르면 한꺼번에 읽어요.</p>
+          <button type="button" onClick={() => input.current?.click()} className={`mt-3 rounded-xl px-6 py-3 text-[16px] font-bold transition ${ready.length ? "border border-line text-ink-2 hover:bg-surface-2" : "bg-brand text-white hover:bg-brand-ink"}`}>파일 선택</button>
           <input ref={input} type="file" multiple accept=".pdf,.hwp,.hwpx" className="hidden" onChange={(e) => { if (e.target.files) add(e.target.files); e.target.value = ""; }} />
         </div>
       )}
@@ -171,23 +171,31 @@ export default function Finder({ status, canRunAI, onOpen }: { status: FinderSta
       {error && <p role="alert" className="mt-3 rounded-xl bg-bad-soft px-4 py-3 text-[16px] text-bad">{error}</p>}
 
       {pending.length > 0 && (
-        <ul className="mt-5 space-y-2" aria-label="읽는 중인 공고">
+        <ul className="mt-4 space-y-2" aria-label="고른 공고">
           {pending.map((i) => (
             <li key={i.id} className="flex flex-wrap items-center gap-3 rounded-xl border border-line bg-surface px-4 py-3">
-              {i.state === "failed" ? null : <Spinner className="text-brand" />}
+              {i.state === "reading" && <Spinner className="text-brand" />}
               <span className="min-w-0 flex-1 truncate text-[16px] text-ink">{i.file.name}</span>
               {i.state === "failed"
                 ? <><span className="w-full text-[15px] text-bad sm:w-auto">{i.error}</span>
                   <button type="button" onClick={() => run([i])} className="rounded-lg border border-line px-3 py-1.5 text-[15px] font-semibold text-ink-2">다시 해 보기</button>
                   <button type="button" onClick={() => setItems((l) => l.filter((x) => x.id !== i.id))} className="text-[15px] text-ink-2 underline">빼기</button></>
-                : <span className="text-[15px] text-ink-2">읽는 중…</span>}
+                : i.state === "ready"
+                  ? <button type="button" onClick={() => setItems((l) => l.filter((x) => x.id !== i.id))} className="text-[15px] text-ink-2 underline">빼기</button>
+                  : <span className="text-[15px] text-ink-2">읽는 중…</span>}
             </li>
           ))}
         </ul>
       )}
 
+      {ready.length > 0 && (
+        <button type="button" onClick={() => run(ready)} className="mt-4 w-full rounded-xl bg-brand px-6 py-3.5 text-[17px] font-bold text-white transition hover:bg-brand-ink">
+          분석 시작 ({ready.length}개) · 1분 안팎 걸려요
+        </button>
+      )}
+
       <ol className="mt-5 space-y-3">
-        {ranked.map(({ item, result }, n) => <NoticeCard key={item.id} rank={n + 1} item={item} result={result} onOpen={() => onOpen(item.file, item.response!)} />)}
+        {ranked.map(({ item, result }, n) => <NoticeCard key={item.id} rank={n + 1} item={item} result={result} onOpen={() => onOpen(item.file, item.response!, profile)} />)}
       </ol>
       {ranked.length > 0 && <p className="mt-4 text-[15px] leading-relaxed text-ink-2">AI가 공고문에서 조건을 뽑고, 비교는 정해진 규칙으로 했어요. 최종 자격은 기관 심사로 정해져요.</p>}
     </section>
@@ -204,7 +212,9 @@ function NoticeCard({ rank, item, result, onOpen }: { rank: number; item: Item; 
   const deadline = deadlineInfo(a);
   const [label, tone] = VERDICT[result.verdict];
   const unit = item.file.type === "application/pdf" ? "쪽" : "구역";
-  const main = result.criteria.filter((c) => c.kind !== "preference" && !c.track);
+  const main = result.criteria.filter((c) => !c.track && (c.kind === "required" || (c.kind === "exclusion" && c.status !== "unknown")));
+  // 규칙으로 가리지 못한 제외 조건은 '확인 필요'가 아니라 "이런 경우는 안 돼요" 목록으로 보여 준다.
+  const excluded = result.criteria.filter((c) => !c.track && c.kind === "exclusion" && c.status === "unknown");
   const tracks = result.criteria.filter((c) => c.track);
   return (
     <li className="rounded-2xl border border-line bg-surface p-5">
@@ -222,6 +232,10 @@ function NoticeCard({ rank, item, result, onOpen }: { rank: number; item: Item; 
         <ul className="mt-2 space-y-2">
           {main.map((c) => <CriterionRow key={c.id} c={c} unit={unit} />)}
         </ul>
+        {excluded.length > 0 && <>
+          <p className="mt-3 text-[15px] font-semibold text-ink-2">이런 경우는 신청할 수 없어요</p>
+          <ul className="mt-1 list-disc space-y-1 pl-5 text-[15px] leading-relaxed text-ink-2">{excluded.map((c) => <li key={c.id}>{c.requirement}</li>)}</ul>
+        </>}
         {tracks.length > 0 && <>
           <p className="mt-3 text-[15px] font-semibold text-ink-2">특정 대상에게만 붙는 조건</p>
           <ul className="mt-1 space-y-2">{tracks.map((c) => <CriterionRow key={c.id} c={c} unit={unit} />)}</ul>

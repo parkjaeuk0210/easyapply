@@ -74,10 +74,12 @@ export type Verdict = "eligible" | "check" | "ineligible";
 export type NoticeResult = { verdict: Verdict; headline: string; remaining: string[]; criteria: CriterionResult[]; topicMatches: number; deadline: string | null };
 
 /**
- * 원문 인용에서 확인되지 않은 조건을 어떻게 다룰지. 한 곳에서만 정한다.
- * "neither": 충족으로도 불가로도 쓰지 않는다(지금). "block_eligible_only": 충족으로는 쓰지 않고, 불가·제외 판단은 그대로 쓴다.
+ * 원문 인용을 원문에서 그대로 찾지 못한 조건을 어떻게 다룰지. 한 곳에서만 정한다.
+ * "trust_met"(지금): 적어 준 내용으로 분명히 맞으면 맞다고 보여 주고, 안 맞는다는 판단만 '확인 필요'로 낮춘다
+ *   (이미 말한 걸 다시 확인하라고 하지 않고, 잘못 읽은 기준 때문에 '불가'로 포기하게 하지도 않는다).
+ * "neither": 맞음·안 맞음 모두 '확인 필요'로 둔다.
  */
-export const UNVERIFIED_POLICY: "neither" | "block_eligible_only" = "neither";
+export const UNVERIFIED_POLICY: "trust_met" | "neither" = "trust_met";
 
 function ageOn(birth: string, on: string) {
   const [by, bm, bd] = birth.split("-").map(Number), [y, m, d] = on.split("-").map(Number);
@@ -173,8 +175,8 @@ function judge(c: Criterion, p: Profile, unverified: boolean, ctx: { today: stri
   if (status === "not_met" && c.rule.has_exception) {
     status = "unknown"; reason = `${reason} 다만 예외 조항이 있어 확인이 필요해요.`;
   }
-  if (unverified && (status === "met" || UNVERIFIED_POLICY === "neither")) {
-    status = "unknown"; reason = `${reason} 원문에서 이 문장을 확인하지 못해 공고를 직접 확인해 주세요.`;
+  if (unverified && (status === "not_met" || UNVERIFIED_POLICY === "neither")) {
+    status = "unknown"; reason = `${reason} 다만 원문에서 이 문장을 그대로 찾지 못했어요. 공고를 확인해 주세요.`;
   }
   return { status, reason };
 }
@@ -194,9 +196,13 @@ export function evaluateNotice(a: Analysis, unverifiedCriteria: string[], p: Pro
   if (a.application_status === "closed") return { ...base, verdict: "ineligible", headline: "접수가 끝난 공고예요.", remaining: [] };
   const failed = deciding.find((c) => c.status === "not_met");
   if (failed) return { ...base, verdict: "ineligible", headline: failed.reason, remaining: [] };
-  const open = deciding.filter((c) => c.status === "unknown");
   if (!deciding.length) return { ...base, verdict: "check", headline: "공고에서 자격 조건을 찾지 못했어요. 공고를 직접 확인해 주세요.", remaining: [] };
-  if (!open.length) return { ...base, verdict: "eligible", headline: "적어 주신 내용으로는 필수 조건에 모두 맞아요.", remaining: [] };
+  // 세금 체납·중복 수혜 같은 제외 조건은 대부분의 사람과 무관하다. '남은 확인'으로 세지 않고 따로 보여 준다.
+  const open = deciding.filter((c) => c.kind === "required" && c.status === "unknown");
+  const exclusions = deciding.some((c) => c.kind === "exclusion" && c.status === "unknown");
+  if (!open.length) return { ...base, verdict: "eligible", remaining: [], headline: exclusions
+    ? "적어 주신 내용으로는 필수 조건에 모두 맞아요. 아래 제외 대상만 아니면 신청할 수 있어요."
+    : "적어 주신 내용으로는 필수 조건에 모두 맞아요." };
   const remaining = [...new Set(open.map((c) => c.label))];
   return { ...base, verdict: "check", headline: `남은 확인: ${remaining.slice(0, 3).join(", ")}${remaining.length > 3 ? ` 외 ${remaining.length - 3}개` : ""}`, remaining };
 }
