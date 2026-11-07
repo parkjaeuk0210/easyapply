@@ -32,7 +32,7 @@ test('같은 PDF를 다시 올리면 AI를 부르지 않고 지난 분석을 다
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   try {
     for (const k of Object.keys(process.env)) if (/^(?:EASYAPPLY_|ANTHROPIC_|OPENAI_|UPSTASH_|KV_|VERCEL)/.test(k)) delete process.env[k];
-    Object.assign(process.env, { NODE_ENV: 'test', EASYAPPLY_PROVIDER: 'api', ANTHROPIC_API_KEY: 'test-only', ANTHROPIC_BASE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}` });
+    Object.assign(process.env, { NODE_ENV: 'development', EASYAPPLY_PROVIDER: 'api', ANTHROPIC_API_KEY: 'test-only', ANTHROPIC_BASE_URL: `http://127.0.0.1:${(server.address() as { port: number }).port}` });
     const pdf = await readFile('tests/fixtures/samples/garam-youth-rent-2026.pdf');
     const first = await analyze(pdfRequest(createSession(new Request('http://localhost:3123')), pdf));
     assert.equal(first.status, 200);

@@ -34,17 +34,18 @@ export function cacheKey(files: InputFile[]): string | null {
   return `easyapply:analysis:${cacheVersion()}:${createHash("sha256").update(files[0].data).digest("hex")}`;
 }
 
-// Redis가 없는 로컬 개발에서만 쓰는 메모리 보관소.
+// Redis가 없는 로컬 개발 서버(next dev)에서만 쓰는 메모리 보관소. 테스트는 서로 섞이지 않게 쓰지 않는다.
 const memory = new Map<string, { value: string; expires: number }>();
-const useRedis = () => { const { url, token } = redisConfig(); return !!url && !!token; };
+const hasRedis = () => { const { url, token } = redisConfig(); return !!url && !!token; };
+const memoryAllowed = () => !isProduction() && process.env.NODE_ENV === "development";
 
 export async function readCache(key: string): Promise<CachedAnalysis | null> {
   try {
-    if (useRedis()) {
+    if (hasRedis()) {
       const value = await redis(["GET", key]);
       return typeof value === "string" ? JSON.parse(value) as CachedAnalysis : null;
     }
-    if (isProduction()) return null;
+    if (!memoryAllowed()) return null;
     const hit = memory.get(key);
     return hit && hit.expires > Date.now() ? JSON.parse(hit.value) as CachedAnalysis : null;
   } catch { return null; }
@@ -55,7 +56,7 @@ export async function writeCache(key: string, entry: CachedAnalysis) {
   const value = JSON.stringify(entry);
   if (Buffer.byteLength(value) > MAX_BYTES) return;
   try {
-    if (useRedis()) await redis(["SET", key, value, "EX", CACHE_TTL_SECONDS]);
-    else if (!isProduction()) memory.set(key, { value, expires: Date.now() + CACHE_TTL_SECONDS * 1000 });
+    if (hasRedis()) await redis(["SET", key, value, "EX", CACHE_TTL_SECONDS]);
+    else if (memoryAllowed()) memory.set(key, { value, expires: Date.now() + CACHE_TTL_SECONDS * 1000 });
   } catch { /* 보관 실패는 무시한다 */ }
 }
