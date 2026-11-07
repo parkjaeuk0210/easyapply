@@ -192,3 +192,14 @@ test('접수가 끝난 공고는 마감일과 함께 알린다', () => {
   const r = evaluateNotice(notice([], { application_status: 'closed', application_deadline_iso: '2026-10-01' }), [], person({}), TODAY);
   assert.match(r.headline, /접수가 이미 끝난 공고예요\(2026\.10\.01 마감\)/);
 });
+
+test('인용 문장이 글자 그대로 안 맞아도 숫자가 원문 그 쪽에 있으면 숫자 의심을 하지 않는다', async () => {
+  const { buildFlags, numbersFound } = await import('../src/lib/verification-flags');
+  const { buildIndex } = await import('../src/lib/textmatch');
+  const index = buildIndex([{ page: 1, items: ['□ 신청자격', '공고일 현재 19세 ~ 39세', '청년(1987.11.4. ~ 2007.11.3. 출생)'] }], 'extracted');
+  assert.equal(numbersFound([{ page: 1, quote: '공고일 현재 19세 ~ 39세 청년' }], index), true);
+  assert.equal(numbersFound([{ page: 1, quote: '만 19~35세' }], index), false);
+  assert.equal(numbersFound([{ page: 1, quote: '청년' }], index), false);
+  const a = notice([{ evidence: [{ page: 1, quote: '공고일 현재 19세 ~ 39세 청년' }] }, { evidence: [{ page: 1, quote: '만 19~35세 청년' }] }]);
+  assert.deepEqual(buildFlags(a, { unverified_criteria: ['c1', 'c2'], method: 'extracted_text' }, false, index), ['c1', 'c2', 'c2#n']);
+});

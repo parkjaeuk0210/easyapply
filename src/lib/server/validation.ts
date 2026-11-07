@@ -83,7 +83,7 @@ const toCheck = (c: Judged, reason: string): Judged => ({ ...c, status: "check",
  * 모델 출력의 사소한 이탈은 받아 주고(빠진 조건은 check로 보충, 모르는 id는 버림, 상충하는 중복은 check),
  * 근거가 부족한 결론은 check로 내린다. 접수 마감과 서류 일정은 서버가 정한다.
  */
-export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unverifiedCriteria: string[] = []): Match {
+export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unverifiedCriteria: string[] = [], hasExtra = false): Match {
   const flags = readFlags(unverifiedCriteria);
   const docIds = new Set(a.documents.map((d) => d.id));
   const judged = new Map<string, Judged>();
@@ -109,7 +109,8 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
     if (c.status === "check") return c;
     const uncited = !e.evidence.length || e.evidence.some((x) => x.quote.trim().length < 2);
     if (c.status === "met") {
-      if (noAnswer) return toCheck(c, NEED_ANSWER);
+      // '더 알려 줄 상황'에 적은 내용으로 모델이 충족을 판단했으면 따른다(같은 내용을 다시 묻지 않는다).
+      if (noAnswer && !hasExtra) return toCheck(c, NEED_ANSWER);
       // 숫자 기준을 원문에서 확인하지 못했으면(잘못 읽었을 수 있음) 충족으로 단정하지 않는다.
       if (flags.doubtMet.has(e.id) || (uncited && /\d/.test(`${e.requirement} ${e.detail ?? ""}`))) return toCheck(c, "이 조건의 숫자 기준을 원문에서 확인하지 못해 충족으로 단정하지 않았어요. 공고문에서 기준을 확인해 주세요.");
       return c;

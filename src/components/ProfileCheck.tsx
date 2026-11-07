@@ -264,6 +264,7 @@ type Result = Match["criteria"][number];
 /** 조건 종류에 맞춰 결과를 낱말 하나로 */
 function verdictWord(c: Criterion | undefined, r: Result) {
   if (r.status === "check") return STATUS.check;
+  if (r.status === "met" && r.not_applicable) return { label: "해당 없음", className: "text-ink-2" };
   if (c?.kind === "preference") return r.status === "met" ? { label: "우대 대상", className: "text-ok" } : { label: "우대 대상 아님", className: "text-ink-2" };
   if (c?.kind === "exclusion") return r.status === "met" ? { label: "해당 없음", className: "text-ok" } : { label: "제외 대상", className: "text-bad" };
   return STATUS[r.status];

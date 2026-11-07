@@ -128,6 +128,8 @@ export const MatchSchema = z.object({
       reason: text(),
       how_to_check: text().nullable(),
       failed_answer_ids: z.array(id()).max(8).prefault([]),
+      // 고령자·신혼부부처럼 특정 대상에게만 붙는 조건에 신청자가 해당하지 않아 met으로 둔 경우 true. 화면에 '해당 없음'으로 보인다.
+      not_applicable: z.boolean().optional(),
     }),
   ).max(80),
   next_searches: z.array(z.object({

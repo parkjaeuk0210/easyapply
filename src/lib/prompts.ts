@@ -73,7 +73,7 @@ export const MATCH_SYSTEM = `당신은 EasyApply의 신청 준비 도우미입�
 - reason은 신청자에게 말하듯 1~2문장, "~해요" 체. 공고문 기준 수치와 신청자 값을 함께 보여줍니다.
 - 판정 이유·확인 방법·체크리스트 설명은 각각 필요한 내용만 짧게 씁니다. 같은 안내를 조건마다 길게 반복하거나 공고문 전체를 재출력하지 않습니다.
 - 모든 자격 조건 id에 대해 빠짐없이 하나씩 판정합니다.
-- detail에 "○○ 지원자만 해당"처럼 대상이 정해진 조건은 신청자가 그 대상이 아니면 met, 대상인지 답변으로 분명하지 않으면 check입니다.
+- detail에 "○○ 지원자만 해당"처럼 대상이 정해진 조건(고령자·신혼부부·특정 계층 전용 등)은 신청자가 그 대상이 아니면 met과 not_applicable=true, 대상인지 답변으로 분명하지 않으면 check입니다. 그 밖의 조건은 not_applicable=false입니다.
 - overall: required와 exclusion 조건만 종합합니다. preference(우대·가점)는 미충족이어도 신청 불가 사유가 아닙니다. 필수/제외 조건에 not_met이 있으면 likely_ineligible, 아니면서 check가 있으면 needs_check, 모두 met이면 likely_eligible. 필수 조건이 불명확하면 needs_check. overall_message는 결과와 가장 먼저 할 일을 2문장 이내로.
 
 다른 공고 검색 제안

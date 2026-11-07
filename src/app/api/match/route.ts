@@ -41,8 +41,8 @@ export async function POST(req: Request) {
     const { data, provider: used } = await runStructured({ system: MATCH_SYSTEM,
       text: matchUserText(analysis, answers, b.extra, todayKST()), schema: MatchSchema, signal: req.signal,
       maxTokens: matchOutputTokens(), requestId, deadline: started + REQUEST_BUDGET_MS,
-      validate: (result) => { finalizeMatch(analysis, answers, result, unchecked); } });
-    return json({ match: finalizeMatch(analysis, answers, data, unchecked), provider: used, request_id: requestId }, 200, { "X-Request-Id": requestId });
+      validate: (result) => { finalizeMatch(analysis, answers, result, unchecked, !!b.extra.trim()); } });
+    return json({ match: finalizeMatch(analysis, answers, data, unchecked, !!b.extra.trim()), provider: used, request_id: requestId }, 200, { "X-Request-Id": requestId });
   } catch (e) { return errorResponse(e, requestId); }
   finally { await release?.(); }
 }
