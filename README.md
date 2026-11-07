@@ -4,13 +4,13 @@
 
 운영 주소: **https://easyapply-five.vercel.app**. 2026-11-06 Vercel에서 실제 PDF/HWPX 분석과 자격 확인·체크리스트 생성을 검증했습니다. 검증 범위와 남는 제품 한계는 [PRODUCTION_AUDIT.md](PRODUCTION_AUDIT.md)에 기록했습니다.
 
-## 현재 운영 상태 (2026-11-07 01:50 KST 기준)
+## 현재 운영 상태 (2026-11-07 09:20 KST 기준)
 
 | 항목 | 상태 |
 |---|---|
-| 배포 | 공개 주소가 Production `dpl_AqPskTwmhsxq8SyreEziJjVm7Z5p`(11-07 01:46:41 생성, 01:47 승격)를 가리킵니다. 소스는 00:36 배포(`dpl_5eQuXZrXd5P6SaEsGtDUjqkmvXBC`)에 첫 화면 중간안(태그줄·제목·설명·예시 카드 복원)을 더한 `release-landing` 브랜치(태그 `prod-20261107-0146`)입니다. 01:00~01:28 서버 결함 수리분(main)은 독립 검토에서 차단 결함 3건이 나와 아직 배포하지 않았습니다 |
+| 배포 | 공개 주소가 Production `dpl_9BsXT8qyLb9xZhyvc4kdwx6aVaqx`(11-07 09:37 생성, 09:40 승격)를 가리킵니다. main의 3차 수리(`42df683`), AI 고지 복원(`f700f89`), 'AI 맞춤 공고 찾기'·Claude 단일화·분석 결과 재사용(`finder` 브랜치)을 포함합니다. 09:05 독립 재검토가 재현한 마감 판정 경로 결함 7건은 아직 고치지 않았습니다(검토 기록 `reports/easyapply-eval-20261107/round3-0900/REVIEW3-codex.md`). 직전 공개본(롤백 기준)은 `dpl_AqPskTwmhsxq8SyreEziJjVm7Z5p`입니다 |
 | AI | Anthropic API(`EASYAPPLY_PROVIDER=api`, 상태 API `provider:"api"`), `claude-opus-5-5`, 추론 `medium`, 처리 속도 `fast`. 모든 AI 호출은 Anthropic 공식 SDK(`@anthropic-ai/sdk`)로 서버에서만 합니다 |
-| 호출 한도 | **해제.** Production에 `EASYAPPLY_USAGE_LIMITS`가 없어(상태 API `usage_limits_enabled:false`) 같은 세션의 중복 실행 방지만 적용합니다 |
+| 호출 한도 | **해제.** Production에 `EASYAPPLY_USAGE_LIMITS`가 없어(상태 API `usage_limits_enabled:false`) 같은 세션의 동시 실행(5개까지) 제한만 적용합니다 |
 | 업로드·형식 | 합계 상한은 공급자별(Anthropic 22 MiB, 로컬 24 MiB, 4 MiB 초과는 비공개 Blob 직접 업로드), 사진 10장·장당 5 MiB. PDF·HWP·HWPX·JPG·PNG·WEBP·GIF |
 | 검증 | `npm test`, `npm run typecheck`, `npm run lint`로 확인합니다 |
 
