@@ -5,7 +5,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { promisify } from 'node:util';
-import { configurationIssues, redisConfig, openAIConfig, usageLimitsEnabled } from '../src/lib/server/config';
+import { configurationIssues, redisConfig, selectedProvider, usageLimitsEnabled } from '../src/lib/server/config';
 
 const baseline = { ...process.env };
 afterEach(() => {
@@ -52,25 +52,14 @@ test('incomplete explicit credentials cannot borrow a token from another Redis',
   assert(configurationIssues().includes('rate_limit_store'));
 });
 
-test('Astra defaults to medium Fast and rejects unsupported none reasoning', () => {
+test('OpenAI is no longer a provider: its setting is a configuration issue and its key is ignored', () => {
   process.env.EASYAPPLY_PROVIDER = 'openai';
   process.env.OPENAI_API_KEY = 'test-not-real';
-  delete process.env.EASYAPPLY_OPENAI_MODEL;
-  delete process.env.EASYAPPLY_OPENAI_REASONING_EFFORT;
-  delete process.env.EASYAPPLY_OPENAI_SERVICE_TIER;
-  assert.deepEqual(openAIConfig(), { model:'gpt-6-astra', reasoning:{effort:'medium'}, service_tier:'fast' });
-  process.env.EASYAPPLY_OPENAI_REASONING_EFFORT='none';
-  assert(configurationIssues().includes('openai_settings'));
-  process.env.EASYAPPLY_OPENAI_REASONING_EFFORT='medium';
-  process.env.EASYAPPLY_OPENAI_SERVICE_TIER='invalid';
-  assert(configurationIssues().includes('openai_settings'));
-});
-
-test('an OpenAI setting typo cannot take down an Anthropic deployment', () => {
-  process.env.EASYAPPLY_PROVIDER = 'api';
+  assert(configurationIssues().includes('provider'));
+  process.env.EASYAPPLY_PROVIDER = 'auto';
   process.env.ANTHROPIC_API_KEY = 'test-not-real';
-  process.env.OPENAI_API_KEY = 'test-not-real';
-  process.env.EASYAPPLY_OPENAI_SERVICE_TIER = 'fsat';
+  assert.equal(selectedProvider(), 'api');
+  process.env.EASYAPPLY_PROVIDER = 'api';
   assert.deepEqual(configurationIssues(), []);
   process.env.EASYAPPLY_ANTHROPIC_SPEED = 'fsat';
   assert(configurationIssues().includes('ai_settings'));

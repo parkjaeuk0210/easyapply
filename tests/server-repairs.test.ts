@@ -143,6 +143,6 @@ test('review 11: upload route and previously signed tickets enforce the active 2
   const ticket = signUpload([file], session.id);
   assert.throws(() => uploadManifest(ticket, session.id), { code: 'too_large', status: 413 });
   await assert.rejects(consumeUploads(ticket, session.id, new AbortController().signal), { code: 'too_large', status: 413 });
-  process.env.EASYAPPLY_PROVIDER = 'openai'; process.env.OPENAI_API_KEY = 'test-only';
-  assert.deepEqual(uploadManifest(ticket, session.id), [file], '24 MiB remains valid for providers whose limit is 24 MiB');
+  process.env.EASYAPPLY_PROVIDER = 'cli';
+  assert.deepEqual(uploadManifest(ticket, session.id), [file], '24 MiB remains valid for the local CLI, whose limit is 24 MiB');
 });

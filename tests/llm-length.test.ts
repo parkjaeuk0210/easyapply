@@ -6,7 +6,7 @@ import { z } from 'zod';
 import { runStructured } from '../src/lib/llm';
 import { ANALYSIS_OUTPUT_TOKENS, MATCH_OUTPUT_TOKENS, matchOutputTokens } from '../src/lib/llm-limits';
 
-type Provider = 'api' | 'openai';
+type Provider = 'api';
 type Reply = {
   json?: string;
   stop?: 'complete' | 'output_limit' | 'other_incomplete';
@@ -38,27 +38,6 @@ function anthropicStream(res: ServerResponse, reply: Reply) {
   send('message_stop', {});
 }
 
-function openAIStream(res: ServerResponse, reply: Reply) {
-  const send = (event: Record<string, unknown>) => res.write(`data: ${JSON.stringify(event)}\n\n`);
-  const json = reply.json ?? '{"result":"ok"}';
-  const incomplete = reply.stop === 'output_limit' || reply.stop === 'other_incomplete';
-  const status = incomplete ? 'incomplete' : 'completed';
-  const part = { type: 'output_text', text: json, annotations: [] };
-  const message = { id: 'msg_length', type: 'message', role: 'assistant', status, content: [part] };
-  const outputTokens = reply.outputTokens ?? 3;
-  const response = { id: 'resp_length', object: 'response', created_at: 1, model: 'gpt-6-astra', reasoning: { effort: 'medium' }, service_tier: 'fast', status: 'in_progress', output: [], parallel_tool_calls: false, tools: [], tool_choice: 'auto', usage: { input_tokens: 2, output_tokens: outputTokens, total_tokens: outputTokens + 2, output_tokens_details: { reasoning_tokens: 1 } } };
-  send({ type: 'response.created', sequence_number: 0, response });
-  send({ type: 'response.output_item.added', sequence_number: 1, output_index: 0, item: { ...message, status: 'in_progress', content: [] } });
-  send({ type: 'response.content_part.added', sequence_number: 2, item_id: message.id, output_index: 0, content_index: 0, part: { ...part, text: '' } });
-  const midpoint = Math.floor(json.length / 2);
-  send({ type: 'response.output_text.delta', sequence_number: 3, item_id: message.id, output_index: 0, content_index: 0, delta: json.slice(0, midpoint) });
-  send({ type: 'response.output_text.delta', sequence_number: 4, item_id: message.id, output_index: 0, content_index: 0, delta: json.slice(midpoint) });
-  send({ type: 'response.output_text.done', sequence_number: 5, item_id: message.id, output_index: 0, content_index: 0, text: json });
-  send({ type: 'response.content_part.done', sequence_number: 6, item_id: message.id, output_index: 0, content_index: 0, part });
-  send({ type: 'response.output_item.done', sequence_number: 7, output_index: 0, item: message });
-  send({ type: `response.${status}`, sequence_number: 8, response: { ...response, status, output: [message], incomplete_details: incomplete ? { reason: reply.stop === 'output_limit' ? 'max_output_tokens' : 'content_filter' } : null } });
-}
-
 async function withProvider(provider: Provider, reply: Reply, check: (bodies: Record<string, unknown>[]) => Promise<void>) {
   const bodies: Record<string, unknown>[] = [];
   const server = createServer(async (req, res) => {
@@ -71,8 +50,7 @@ async function withProvider(provider: Provider, reply: Reply, check: (bodies: Re
       return;
     }
     res.writeHead(200, { 'content-type': 'text/event-stream' });
-    if (provider === 'api') anthropicStream(res, reply);
-    else openAIStream(res, reply);
+    anthropicStream(res, reply);
     res.end();
   });
   server.listen(0, '127.0.0.1');
@@ -81,9 +59,7 @@ async function withProvider(provider: Provider, reply: Reply, check: (bodies: Re
   const overrides: Record<string, string | undefined> = {
     EASYAPPLY_PROVIDER: provider,
     ANTHROPIC_API_KEY: 'test-only', ANTHROPIC_AUTH_TOKEN: undefined, ANTHROPIC_BASE_URL: baseURL, ANTHROPIC_LOG: undefined,
-    OPENAI_API_KEY: 'test-only', OPENAI_BASE_URL: baseURL, OPENAI_LOG: undefined,
     EASYAPPLY_EFFORT: 'medium', EASYAPPLY_ANTHROPIC_SPEED: 'fast',
-    EASYAPPLY_OPENAI_MODEL: 'gpt-6-astra', EASYAPPLY_OPENAI_REASONING_EFFORT: 'medium', EASYAPPLY_OPENAI_SERVICE_TIER: 'fast',
     EASYAPPLY_REQUEST_TIMEOUT_MS: '5000',
   };
   const original = Object.fromEntries(Object.keys(overrides).map((key) => [key, process.env[key]]));
@@ -103,7 +79,7 @@ async function withProvider(provider: Provider, reply: Reply, check: (bodies: Re
   }
 }
 
-for (const provider of ['api', 'openai'] as const) {
+for (const provider of ['api'] as const) {
   test(`${provider}: analysis streams with 32000 output tokens and match with 16000`, async () => {
     assert.equal(ANALYSIS_OUTPUT_TOKENS, 32_000);
     assert.equal(MATCH_OUTPUT_TOKENS, 16_000);
@@ -114,7 +90,7 @@ for (const provider of ['api', 'openai'] as const) {
         assert.deepEqual(result.data, { result: 'ok' });
         assert.equal(result.provider, provider);
         assert.equal(bodies.length, requestsBefore + 1);
-        assert.equal(bodies.at(-1)?.[provider === 'api' ? 'max_tokens' : 'max_output_tokens'], expected);
+        assert.equal(bodies.at(-1)?.max_tokens, expected);
         assert.equal(bodies.at(-1)?.stream, true);
       }
     });
@@ -125,7 +101,7 @@ for (const provider of ['api', 'openai'] as const) {
     try {
       await withProvider(provider, {}, async (bodies) => {
         await runStructured(options);
-        assert.equal(bodies.at(-1)?.[provider === 'api' ? 'max_tokens' : 'max_output_tokens'], 48_000);
+        assert.equal(bodies.at(-1)?.max_tokens, 48_000);
       });
     } finally { delete process.env.EASYAPPLY_ANALYZE_OUTPUT_TOKENS; }
   });
@@ -146,7 +122,7 @@ for (const provider of ['api', 'openai'] as const) {
         await assert.rejects(runStructured(options), { name: 'AppError', code: 'output_limit', status: 502 });
         assert.equal(bodies.length, 1);
         const usage = logs.map((line) => JSON.parse(line)).find((event) => event.event === 'ai_usage');
-        assert.equal(usage?.stop_reason, provider === 'api' ? 'max_tokens' : 'max_output_tokens');
+        assert.equal(usage?.stop_reason, 'max_tokens');
         assert.equal(usage?.output_tokens, 128_000);
         assert.equal(usage?.max_output_tokens, 32_000);
       });
@@ -155,7 +131,7 @@ for (const provider of ['api', 'openai'] as const) {
 
   test(`${provider}: an incomplete response for another reason is retried once and not mislabeled output exhaustion`, async () => {
     await withProvider(provider, { stop: 'other_incomplete' }, async (bodies) => {
-      await assert.rejects(runStructured(options), { name: 'AppError', code: provider === 'api' ? 'bad_output' : 'incomplete', status: 502 });
+      await assert.rejects(runStructured(options), { name: 'AppError', code: 'bad_output', status: 502 });
       assert.equal(bodies.length, 2);
     });
   });
@@ -184,12 +160,5 @@ test('api: thinking alone can exhaust the output budget and is never accepted as
   await withProvider('api', { stop: 'output_limit', outputTokens: 128_000, thinkingOnly: true }, async (bodies) => {
     await assert.rejects(runStructured(options), { name: 'AppError', code: 'output_limit', status: 502 });
     assert.equal(bodies.length, 1);
-  });
-});
-
-test('openai: malformed completed JSON is retried once, then rejected', async () => {
-  await withProvider('openai', { json: 'not JSON' }, async (bodies) => {
-    await assert.rejects(runStructured(options), { name: 'AppError', code: 'bad_output', status: 502 });
-    assert.equal(bodies.length, 2);
   });
 });

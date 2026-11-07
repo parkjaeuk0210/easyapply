@@ -20,7 +20,7 @@ const SourceViewer = dynamic(() => import("./SourceViewer"), {
   loading: () => <div className="h-full animate-pulse rounded-2xl bg-surface" />,
 });
 
-type Provider = "openai" | "api" | "cli" | "none";
+type Provider = "api" | "cli" | "none";
 type Status = { provider: Provider; model: string | null; hosted?: boolean; max_upload_bytes?: number; max_direct_upload_bytes?: number; large_uploads?: boolean; access_required?: boolean; message?: string | null };
 type Tab = "overview" | "eligibility" | "documents" | "cautions" | "glossary" | "mine";
 

@@ -6,52 +6,6 @@ import { z } from 'zod';
 import { runStructured } from '../src/lib/llm';
 import { errorResponse } from '../src/lib/server/errors';
 
-test('OpenAI adapter sends Astra medium Fast, PDF and strict JSON through the real SDK', async()=>{
-  let body: Record<string, unknown> | undefined;
-  const server=createServer(async(req,res)=>{
-    let input=''; for await(const chunk of req) input+=chunk;
-    body=JSON.parse(input);
-    res.writeHead(200,{'content-type':'text/event-stream'});
-    const send=(event:unknown)=>res.write(`data: ${JSON.stringify(event)}\n\n`);
-    const message={id:'msg_test',type:'message',role:'assistant',status:'completed',content:[{type:'output_text',text:'{"result":"ok"}',annotations:[]}]};
-    const response={id:'resp_test',object:'response',created_at:1,model:'gpt-6-astra',reasoning:{effort:'medium'},service_tier:'fast',status:'in_progress',output:[],parallel_tool_calls:false,tools:[],tool_choice:'auto',usage:{input_tokens:2,output_tokens:3,total_tokens:5}};
-    send({type:'response.created',sequence_number:0,response});
-    send({type:'response.output_item.added',sequence_number:1,output_index:0,item:{...message,status:'in_progress',content:[]}});
-    send({type:'response.content_part.added',sequence_number:2,item_id:'msg_test',output_index:0,content_index:0,part:{type:'output_text',text:'',annotations:[]}});
-    send({type:'response.output_text.delta',sequence_number:3,item_id:'msg_test',output_index:0,content_index:0,delta:'{"result":"ok"}'});
-    send({type:'response.output_text.done',sequence_number:4,item_id:'msg_test',output_index:0,content_index:0,text:'{"result":"ok"}'});
-    send({type:'response.content_part.done',sequence_number:5,item_id:'msg_test',output_index:0,content_index:0,part:message.content[0]});
-    send({type:'response.output_item.done',sequence_number:6,output_index:0,item:message});
-    send({type:'response.completed',sequence_number:7,response:{...response,status:'completed',output:[message]}});
-    res.end();
-  });
-  server.listen(0,'127.0.0.1'); await once(server,'listening');
-  const original={...process.env};
-  try{
-    process.env.OPENAI_API_KEY='test-only';process.env.OPENAI_BASE_URL=`http://127.0.0.1:${(server.address() as {port:number}).port}`;process.env.EASYAPPLY_PROVIDER='openai';
-    process.env.EASYAPPLY_OPENAI_MODEL='gpt-6-astra';process.env.EASYAPPLY_OPENAI_REASONING_EFFORT='medium';process.env.EASYAPPLY_OPENAI_SERVICE_TIER='fast';
-    const result=await runStructured({system:'system',text:'analyze',schema:z.object({result:z.string()}),files:[{name:'test.pdf',mediaType:'application/pdf',data:Buffer.from('%PDF-test')}]});
-    assert.equal(result.provider,'openai');assert.deepEqual(result.data,{result:'ok'});
-    assert.equal(body?.store,false);assert.match(JSON.stringify(body),/input_file/);assert.match(JSON.stringify(body),/json_schema/);assert.match(JSON.stringify(body),/strict/);
-    assert.equal(body?.model,'gpt-6-astra');assert.deepEqual(body?.reasoning,{effort:'medium'});assert.equal(body?.service_tier,'fast');
-  }finally{
-    for(const k of Object.keys(process.env))if(!(k in original))delete process.env[k];Object.assign(process.env,original);
-    server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));
-  }
-});
-
-test('provider authentication errors are mapped without disclosing response bodies',async()=>{
-  const server=createServer((req,res)=>{req.resume();res.writeHead(401,{'content-type':'application/json'});res.end(JSON.stringify({error:{message:'sk-SECRET PRIVATE DOCUMENT',type:'invalid_request_error',code:'invalid_api_key'}}));});
-  server.listen(0,'127.0.0.1');await once(server,'listening'); const original={...process.env};
-  try{
-    process.env.OPENAI_API_KEY='test';process.env.OPENAI_BASE_URL=`http://127.0.0.1:${(server.address() as {port:number}).port}`;process.env.EASYAPPLY_PROVIDER='openai';
-    await assert.rejects(runStructured({system:'test',text:'test',schema:z.object({ok:z.boolean()})}),(e:{code:string;message:string})=>e.code==='provider_auth'&&!e.message.includes('PRIVATE'));
-  }finally{
-    for(const k of Object.keys(process.env))if(!(k in original))delete process.env[k];Object.assign(process.env,original);
-    server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));
-  }
-});
-
 test('Anthropic adapter sends Opus 5.5 medium Fast and validates result tool input after thinking blocks', async()=>{
   let body: Record<string, unknown> | undefined;
   let outputText='{"result":"ok"}';
@@ -138,7 +92,7 @@ test('a transient 529 is retried once within the time budget', async () => {
 
 test('no retry when too little of the request budget is left', async () => {
   await withAnthropic([{ status: 529 }, 'ok'], async (hits) => {
-    await assert.rejects(runStructured({ ...okSchema, deadline: Date.now() + 30_000 }), (e: { code: string }) => e.code === 'upstream');
+    await assert.rejects(runStructured({ ...okSchema, deadline: Date.now() + 30_000 }), (e: { code: string }) => e.code === 'provider_overloaded');
     assert.equal(hits(), 1);
   });
 });
@@ -172,5 +126,55 @@ test('a 400 about the uploaded PDF still asks the user to re-save the file', asy
   await withAnthropic([badPdf], async () => {
     const error = await runStructured({ ...okSchema, files: [{ name: 'notice.pdf', mediaType: 'application/pdf', data: Buffer.from('%PDF-test') }] }).catch((e) => e);
     assert.equal(error.code, 'provider_input');
+  });
+});
+
+test('authentication errors are mapped without disclosing response bodies', async () => {
+  const denied = { status: 401, body: { type: 'error', error: { type: 'authentication_error', message: 'sk-SECRET PRIVATE DOCUMENT' } } };
+  await withAnthropic([denied], async (hits) => {
+    const error = await runStructured(okSchema).catch((e) => e);
+    assert.equal(error.code, 'provider_auth');
+    assert(!error.message.includes('PRIVATE'));
+    assert.equal(hits(), 1);
+  });
+});
+
+test('an empty credit balance is reported as such and not retried', async () => {
+  const credit = { status: 400, body: { type: 'error', error: { type: 'invalid_request_error', message: 'Your credit balance is too low to access the Anthropic API.' } } };
+  const billing = { status: 402, body: { type: 'error', error: { type: 'billing_error', message: 'Billing problem' } } };
+  for (const reply of [credit, billing]) {
+    await withAnthropic([reply], async (hits) => {
+      const error = await runStructured(okSchema).catch((e) => e);
+      assert.equal(error.code, 'provider_credit');
+      assert.equal(error.status, 503);
+      assert.equal(hits(), 1);
+    });
+  }
+});
+
+test('a prompt over the context window asks for fewer pages', async () => {
+  const long = { status: 400, body: { type: 'error', error: { type: 'invalid_request_error', message: 'prompt is too long: 1200000 tokens > 1000000 maximum' } } };
+  await withAnthropic([long], async () => {
+    const error = await runStructured({ ...okSchema, files: [{ name: 'notice.pdf', mediaType: 'application/pdf', data: Buffer.from('%PDF-test') }] }).catch((e) => e);
+    assert.equal(error.code, 'too_large');
+    assert.equal(error.status, 413);
+  });
+});
+
+test('a persistent 529 ends as a busy message after one retry', async () => {
+  await withAnthropic([{ status: 529 }, { status: 529 }], async (hits) => {
+    const error = await runStructured(okSchema).catch((e) => e);
+    assert.equal(error.code, 'provider_overloaded');
+    assert.equal(hits(), 2);
+  });
+});
+
+test('a 429 is a rate limit with a retry hint', async () => {
+  const limited = { status: 429, headers: { 'retry-after': '120' }, body: { type: 'error', error: { type: 'rate_limit_error', message: 'Rate limited' } } };
+  await withAnthropic([limited], async (hits) => {
+    const error = await runStructured(okSchema).catch((e) => e);
+    assert.equal(error.code, 'provider_rate_limit');
+    assert.equal(error.status, 429);
+    assert.equal(hits(), 1);
   });
 });

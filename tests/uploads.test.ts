@@ -33,7 +33,7 @@ test('upload metadata enforces 24 MiB total and 5 MiB per photo', () => {
 
 test('Anthropic uploads stop at 22 MiB so base64 stays under the 32 MB request limit', () => {
   assert.equal(maxUploadBytes('api'), 23_068_672);
-  assert.equal(maxUploadBytes('openai'), 25_165_824);
+  assert.equal(maxUploadBytes('cli'), 25_165_824);
   const pdf = { name: 'notice.pdf', mediaType: 'application/pdf', size: 23_068_673 };
   assert.throws(() => validateUploadSpecs([pdf], maxUploadBytes('api')), (e: AppError) => e.status === 413 && /22MB/.test(e.message));
   // base64 of the largest accepted PDF plus ~1 MB of prompt and schema still fits.
