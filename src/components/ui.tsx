@@ -3,7 +3,7 @@
 import { createContext, useContext } from "react";
 import type { Analysis, Evidence } from "@/lib/schema";
 import type { Located } from "@/lib/textmatch";
-import { deadlineDays, mainDeadline, shortDate, todayLocalISO } from "@/lib/dates";
+import { daysUntil, shortDate, todayLocalISO } from "@/lib/dates";
 
 // ── 날짜 ────────────────────────────────────────────────────────
 
@@ -15,18 +15,20 @@ export function koDate(iso: string | null | undefined, weekday = true) {
   return `${year}${short[1]}월 ${short[2]}일${weekday ? short[3] : ""}`;
 }
 
-/** 접수 마감을 사람이 읽는 한 줄로. 마감일을 못 찾으면 null. */
+/** 서버가 정한 접수 상태(application_status·application_deadline_iso)를 사람이 읽는 한 줄로. 화면에서 따로 계산하지 않는다. */
 export function deadlineInfo(a: Analysis) {
-  const deadline = mainDeadline(a);
-  const days = deadlineDays(deadline);
-  if (!deadline || days === null) return null;
-  if (days < 0) return { expired: true, days, text: `이 공고는 ${koDate(deadline.date_iso, false)}에 접수가 끝났어요.`, left: null };
-  return {
+  const days = daysUntil(a.application_deadline_iso);
+  if (a.application_status === "closed" && days !== null) return { expired: true, days, text: `이 공고는 ${koDate(a.application_deadline_iso, false)}에 접수가 끝났어요.`, left: null };
+  // 분석 뒤 날짜가 지나 버린 open은 다른 회차가 남았는지 알 수 없어 unknown과 같이 보여 준다.
+  // 표시만: 그날 접수 마감의 시각이 하나로 정해질 때만 붙인다(상태 판정에는 쓰지 않는다).
+  const times = new Set(a.schedule.filter((s) => s.is_application_deadline && s.date_iso === a.application_deadline_iso && s.time).map((s) => s.time));
+  if (a.application_status === "open" && days !== null && days >= 0) return {
     expired: false,
     days,
-    text: `${koDate(deadline.date_iso)}${deadline.time ? ` ${deadline.time}` : ""}까지 신청`,
+    text: `${koDate(a.application_deadline_iso)}${times.size === 1 ? ` ${[...times][0]}` : ""}까지 신청`,
     left: days === 0 ? "오늘 마감" : `${days}일 남았어요`,
   };
+  return { expired: false, days: null, text: "마감일을 확정하지 못했어요. 원문에서 확인해 주세요.", left: null };
 }
 
 // ── 근거(원문) 컨텍스트 ─────────────────────────────────────────

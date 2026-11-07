@@ -5,7 +5,7 @@ import { AnalysisSchema, MatchSchema } from '../src/lib/schema';
 import { assertOrigin, readBody } from '../src/lib/server/http';
 import { createSession, session, signAnalysis, verifyAnalysis } from '../src/lib/server/tokens';
 import { acquireAI, limitAttempts } from '../src/lib/server/guard';
-import { validateAnalysis, validateAnswers, finalizeMatch } from '../src/lib/server/validation';
+import { validateAnalysis, validateAnswers, finalizeMatch, settleApplication } from '../src/lib/server/validation';
 import { matchesSignature, readUploads, inspectPdf, verifyEvidence } from '../src/lib/server/uploads';
 import { detectProvider, runStructured } from '../src/lib/llm';
 import { POST as matchRoute } from '../src/app/api/match/route';
@@ -69,7 +69,8 @@ test('expired applications replace document and submission tasks with a reopenin
   // This case has only confirmed application ends. An unclassified start-only row
   // cannot establish that every recruitment round ended (review 3).
   a.schedule = a.schedule.filter(s => s.is_deadline).map(s => ({ ...s, is_application_deadline: true }));
-  const r=finalizeMatch(a,demo.answers,m,[],new Date('2030-01-01'));
+  settleApplication(a,[],new Date('2030-01-01'));
+  const r=finalizeMatch(a,demo.answers,m);
   assert.match(r.overall_message,/마감일이 모두 지났/);
   assert(r.checklist.some(t=>t.title==='추가 모집 여부 확인'));
   assert(r.checklist.every(t=>t.kind!=='document' && t.kind!=='apply'));
@@ -107,7 +108,8 @@ test('eligible and uncertain results still receive required documents and an app
   m.overall = 'likely_ineligible';
   const now = new Date('2026-11-06T12:00:00+09:00');
   for (const uncertain of [false, true]) {
-    const result = finalizeMatch(a, uncertain ? {} : { q1:'확인' }, m, [], now);
+    settleApplication(a, [], now);
+    const result = finalizeMatch(a, uncertain ? {} : { q1:'확인' }, m);
     assert.equal(result.overall, uncertain ? 'needs_check' : 'likely_eligible');
     for (const doc of a.documents.filter(d => d.necessity === 'required')) {
       assert.equal(result.checklist.filter(t => t.kind === 'document' && t.document_id === doc.id).length, 1);
@@ -125,18 +127,22 @@ test('later follow-up deadlines cannot hide a closed application period', () => 
     { ...base, label:'선정자 증빙 제출 마감', date_iso:'2026-11-20', is_application_deadline:false },
   ];
   const now = new Date('2026-11-06T12:00:00+09:00');
-  const closed = finalizeMatch(a, { q1:'확인' }, m, [], now);
+  settleApplication(a, [], now);
+  const closed = finalizeMatch(a, { q1:'확인' }, m);
   assert.equal(closed.overall, 'needs_check');
   assert.match(closed.overall_message, /접수 마감일이 모두 지났/);
   assert(closed.criteria.every(c => c.status === 'met'));
   assert(closed.checklist.every(t => t.kind !== 'document' && t.kind !== 'apply'));
   a.schedule.push({ ...base, label:'추가 신청 접수', date_iso:'2026-11-10', is_application_deadline:true });
-  const open = finalizeMatch(a, { q1:'확인' }, m, [], now);
+  settleApplication(a, [], now);
+  const open = finalizeMatch(a, { q1:'확인' }, m);
   assert.equal(open.overall, 'likely_eligible');
   assert(open.checklist.some(t => t.kind === 'apply'));
   assert.doesNotMatch(open.overall_message, /모두 지났/);
   a.schedule[2].date_iso = null;
-  assert.doesNotMatch(finalizeMatch(a, { q1:'확인' }, m, [], now).overall_message, /모두 지났/);
+  settleApplication(a, [], now);
+  assert.equal(a.application_status, 'unknown');
+  assert.doesNotMatch(finalizeMatch(a, { q1:'확인' }, m).overall_message, /모두 지났/);
 });
 
 test('application deadline classification must be consistent and is never guessed for legacy data', () => {

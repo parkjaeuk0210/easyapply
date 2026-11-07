@@ -37,10 +37,6 @@ export function shortDate(iso: string | null | undefined) {
   return `${d.getUTCMonth() + 1}/${d.getUTCDate()}(${WD[d.getUTCDay()]})`;
 }
 
-export function applicationDeadlines(a: Analysis) {
-  return a.schedule.filter((s) => s.is_deadline && s.is_application_deadline && !OPEN_ENDED.test(`${s.label} ${s.date_text}`));
-}
-
 type Dated = { date_iso: string | null; time: string | null };
 
 /** 마감 시각(KST). 시각이 적혀 있으면 그 시각, 날짜만 있으면 그날 23:59:59. 날짜가 없으면 null. */
@@ -54,21 +50,6 @@ export function deadlineEnd(s: Dated): Date | null {
 export function deadlinePassed(s: Dated, now = new Date()) {
   const end = deadlineEnd(s);
   return !!end && now.getTime() > end.getTime();
-}
-
-/** 화면 D-day용 남은 일수. 마감 시각이 지났으면 같은 날이어도 -1(마감). */
-export function deadlineDays(s: Dated | null | undefined, now = new Date()) {
-  if (!s || !deadlineEnd(s)) return null;
-  return deadlinePassed(s, now) ? -1 : daysUntil(s.date_iso, kstISO(now));
-}
-
-export function mainDeadline(a: Analysis, today = todayLocalISO(), now = today === todayLocalISO() ? new Date() : new Date(`${today}T00:00:00+09:00`)) {
-  const deadlines = applicationDeadlines(a)
-    .filter((s) => deadlineEnd(s))
-    .sort((x, y) => deadlineEnd(x)!.getTime() - deadlineEnd(y)!.getTime());
-  if (!deadlines.length) return null;
-  // 아직 지나지 않은 가장 이른 마감, 없으면 마지막 마감
-  return deadlines.find((s) => !deadlinePassed(s, now)) ?? deadlines[deadlines.length - 1];
 }
 
 // ── 한국어 날짜 표기 해석 ─────────────────────────────────────────
@@ -191,12 +172,10 @@ export function parseKoreanDates(text: string): DateMention[] {
   return found;
 }
 
-// ── 일정 날짜 대조와 접수 마감 추정 ──────────────────────────────────
+// ── 일정 날짜 대조 ───────────────────────────────────────────────
 
 type Entry = Analysis["schedule"][number];
 const APPLY_WORDS = /접수|신청|모집|지원/;
-const END_WORDS = /마감|종료|까지/;
-const OPEN_ENDED = /상시|수시|예산\s*소진/;
 const LATER_STAGE = /발표|지급|결과|선정|합격|면접|교육|이의|보완|정산|활동|협약|사업\s*기간|지원\s*기간/;
 
 /** 이름·표기로 보아 처음 신청하는 사람의 접수 기간·마감으로 보이는 일정인지. */
@@ -208,7 +187,7 @@ export function looksLikeApplication(s: Entry) {
 const weekdayOf = (iso: string) => parseISO(iso)!.getUTCDay();
 
 function reconcileEntry(s: Entry, years: Set<number>, thisYear: number) {
-  if (!s.is_application_deadline) s.deadline_inferred = false;
+  s.deadline_inferred = false;
   if (s.date_uncertain) s.date_iso = null;
   if (!s.date_iso) return;
   const uncertain = () => {
@@ -221,38 +200,23 @@ function reconcileEntry(s: Entry, years: Set<number>, thisYear: number) {
   // Separate end dates in one entry cannot establish which recruitment round is closed.
   if (deadlineLike && new Set(mentions.filter((x) => !x.rangeEnd).map((x) => `${x.year}-${x.month}-${x.day}`)).size > 1) return uncertain();
   const [y, m, d] = s.date_iso.split("-").map(Number);
-  let hit = mentions.find((x) => x.month === m && x.day === d && (x.year === null || x.year === y));
-  let year = y;
-  if (!hit) {
-    // '5. 17. 자정'을 다음 날 00:00으로 적은 경우
-    const prev = new Date(Date.UTC(y, m - 1, d - 1));
-    hit = s.time === "00:00" ? mentions.find((x) => x.midnight && x.month === prev.getUTCMonth() + 1 && x.day === prev.getUTCDate() &&
-      (x.year === null || x.year === prev.getUTCFullYear())) : undefined;
-    if (!hit) return uncertain();
-    year = prev.getUTCFullYear();
-  }
-  // 연도가 원문에 없으면 같은 공고의 다른 날짜·제목에 나온 연도이거나, 적힌 요일이 맞는 올해 앞뒤 해일 때만 믿는다(요일은 아래에서 대조).
-  if (hit.year === null && !years.has(year) && !(hit.weekday !== null && Math.abs(year - thisYear) <= 1)) return uncertain();
-  let target = hit;
-  if (deadlineLike && hit.rangeEnd) target = hit.rangeEnd;
-  const targetYear = target === hit ? year : target.year ?? year + (target.month < hit.month ? 1 : 0);
-  const iso = isoOf(targetYear, target.month, target.day);
-  if (!parseISO(iso)) return uncertain();
-  const hitIso = isoOf(year, hit.month, hit.day);
-  if ((hit.weekday !== null && hit.weekday !== weekdayOf(hitIso)) || (target.weekday !== null && target.weekday !== weekdayOf(iso))) return uncertain();
-  s.date_iso = iso;
-  if (target.midnight) s.time = "23:59";
-  else if (target !== hit) s.time = target.timeEnd ?? target.time;
-  else if (deadlineLike && (target.timeEnd ?? target.time)) s.time = target.timeEnd ?? target.time;
+  const hit = mentions.find((x) => x.month === m && x.day === d && (x.year === null || x.year === y));
+  // 원문에 없는 날짜, 마감인데 기간의 시작 날짜인 경우는 다른 날짜로 바꾸지 않고 비운다.
+  if (!hit || (s.is_deadline && hit.rangeEnd)) return uncertain();
+  // 연도가 원문에 없으면 같은 공고의 다른 날짜·제목에 나온 연도이거나, 적힌 요일이 맞는 올해 앞뒤 해일 때만 믿는다.
+  if (hit.year === null && !years.has(y) && !(hit.weekday !== null && Math.abs(y - thisYear) <= 1)) return uncertain();
+  if (hit.weekday !== null && hit.weekday !== weekdayOf(s.date_iso)) return uncertain();
+  if (hit.midnight) s.time = "23:59";
+  else if (deadlineLike && (hit.timeEnd ?? hit.time)) s.time = hit.timeEnd ?? hit.time;
   // 원문에 시각이 없는 마감의 00:00은 '자정'을 잘못 읽은 값이라 하루 일찍 닫히지 않게 지운다.
   else if (deadlineLike && s.time === "00:00") s.time = null;
 }
 
 /**
- * 모델이 채운 date_iso·time을 date_text(없으면 인용)의 날짜와 대조해 고친다. 제자리 수정이며 여러 번 불러도 같다.
- * - 월·일·요일·연도가 맞지 않으면 date_iso를 비우고 date_uncertain=true
- * - 마감의 기간 표기는 끝 날짜로, 자정·24:00은 그날 23:59로
- * - 종료 표기나 날짜 범위가 명확한 접수 일정만 회차별로 추정(deadline_inferred=true)
+ * 모델이 채운 date_iso를 date_text(없으면 인용)의 날짜와 대조한다. 제자리 수정이며 여러 번 불러도 같다.
+ * - 월·일·요일·연도가 맞지 않거나, 마감이 기간의 시작 날짜를 가리키면 date_iso를 비우고 date_uncertain=true
+ * - date_iso를 다른 날짜로 바꿔 쓰지 않는다. 자정·24:00 표기는 그날 23:59로 시각만 맞춘다.
+ * - 접수 마감은 추정하지 않는다. 모델이 준 플래그만 쓰고 deadline_inferred는 항상 false.
  */
 export function reconcileDates(a: Analysis) {
   const years = new Set<number>();
@@ -262,14 +226,6 @@ export function reconcileDates(a: Analysis) {
   }
   const thisYear = Number(todayLocalISO().slice(0, 4));
   for (const s of a.schedule) reconcileEntry(s, years, thisYear);
-  for (const s of a.schedule) {
-    if (s.is_application_deadline || !deadlineEnd(s) || !looksLikeApplication(s)) continue;
-    const text = `${s.label} ${s.date_text}`;
-    if (OPEN_ENDED.test(text) || (!END_WORDS.test(text) && !parseKoreanDates(s.date_text).some((d) => d.rangeEnd))) continue;
-    s.is_deadline = true;
-    s.is_application_deadline = true;
-    s.deadline_inferred = true;
-  }
 }
 
 // ── 캘린더(.ics) 내보내기 ────────────────────────────────────────

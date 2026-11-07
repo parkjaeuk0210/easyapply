@@ -45,7 +45,8 @@ function fail(message) { throw new Error(message); }
       const data = compressed ? inflateRawSync(raw, { maxOutputLength: MAX }) : raw;
       total += data.length; if (total > 32 * 1024 * 1024) fail('too_long');
       const lines = [];
-      let at = 0, table = null, pendingText = 0;
+      // anchors: table anchors (ch 11 ' lbt') in the current top-level PARA_TEXT not yet matched by a table control.
+      let at = 0, table = null, pendingText = 0, anchors = 0;
       const closeTable = () => {
         if (table && (!table.expected || table.cells !== table.expected || table.paragraphs)) uncertainLayout = true;
         table = null;
@@ -59,6 +60,7 @@ function fail(message) { throw new Error(message); }
         if (at + length > data.length) fail('invalid');
         const record = data.subarray(at, at + length);
         if (level < 2) closeTable();
+        if (tag === 66 && level === 0) { if (anchors) uncertainLayout = true; anchors = 0; }
         // Only top-level inline tables with a complete, already row-major grid are safe.
         // Unsupported shapes/equations may contain text absent from PARA_TEXT.
         if (tag < 66 || tag > 77 || tag === 76) uncertainLayout = true;
@@ -66,6 +68,7 @@ function fail(message) { throw new Error(message); }
           const id = record.toString('latin1', 0, 4);
           if (id === ' lbt') {
             if (level !== 1 || length < 44 || !(record.readUInt32LE(4) & 1)) uncertainLayout = true;
+            if (level === 1 && anchors-- <= 0) uncertainLayout = true; // A table control without its inline anchor.
             if (level === 1) table = { expected: 0, cols: 0, cells: 0, paragraphs: 0 };
           } else if (!['dces', 'dloc', 'pngp', 'dhgp', 'tcgp', 'onta', 'onwn', 'klh%'].includes(id)) uncertainLayout = true;
           if (id === 'dces' && (length < 8 || (record.readUInt32LE(4) & 0x70000))) uncertainLayout = true;
@@ -109,7 +112,7 @@ function fail(message) { throw new Error(message); }
             else if ([0, 24, 25, 30, 31].includes(ch)) { if (ch) s += ' '; }
             else {
               if (i + 14 > para.length) fail('invalid');
-              if (ch === 11 && para.toString('latin1', i, i + 4) === ' lbt') tableAnchor = true;
+              if (ch === 11 && para.toString('latin1', i, i + 4) === ' lbt') { tableAnchor = true; if (level === 1) anchors++; }
               if (ch === 9) s += '\t'; i += 14;
             }
           }
@@ -118,7 +121,7 @@ function fail(message) { throw new Error(message); }
         }
         at += length;
       }
-      if (pendingText > 1) uncertainLayout = true;
+      if (pendingText > 1 || anchors) uncertainLayout = true;
       closeTable();
       sections.push(lines.join('\n'));
     }
@@ -177,7 +180,10 @@ function fail(message) { throw new Error(message); }
         node.childElems().forEach(child => scan(child, depth + 1));
       };
       scan(pkg);
-      for (const href of spine.map(id => items.get(id) ?? '')) {
+      for (const id of spine) {
+        // An unresolvable spine reference is rejected, not treated as an empty path.
+        if (!items.has(id) || typeof items.get(id) !== 'string') fail('invalid');
+        const href = items.get(id).replace(/^(?:\.\/)+/, '');
         if (/section\d+\.xml$/i.test(href) && !entries.has(href) && !entries.has(`Contents/${href}`)) fail('invalid');
       }
     }

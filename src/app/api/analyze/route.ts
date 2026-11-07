@@ -8,7 +8,7 @@ import { AppError, errorResponse, json } from "@/lib/server/errors";
 import { acquireAI, chargeAI, guard, limitAttempts } from "@/lib/server/guard";
 import { readUploads, inspectPdf, verifyEvidence } from "@/lib/server/uploads";
 import { extractHangul } from "@/lib/server/hangul";
-import { validateAnalysis } from "@/lib/server/validation";
+import { settleApplication, validateAnalysis } from "@/lib/server/validation";
 import { signAnalysis } from "@/lib/server/tokens";
 import type { TextIndex } from "@/lib/textmatch";
 import { isLoopbackRequest } from "@/lib/server/http";
@@ -57,6 +57,7 @@ export async function POST(req: Request) {
     });
     const verification = verifyEvidence(analysis, index);
     if (extracted?.uncertainLayout) verification.unverified_criteria = analysis.eligibility.map(c => c.id);
+    settleApplication(analysis, verification.unverified_schedule);
     const source = extracted ? { kind: "text", name: first.name, sections: extracted.sections, warning: extracted.warning } : undefined;
     console.info(JSON.stringify({ event: "analyze_complete", request_id: requestId, provider: used, elapsed_ms: Date.now() - started, verification: { ...verification, page_corrections_count: verification.page_corrections.length, page_corrections: verification.page_corrections.map(({ page, found_page }) => ({ page, found_page })) } }));
     return json({ analysis, analysis_token: signAnalysis(analysis, sid, verification.unverified_criteria), verification, source, provider: used, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });

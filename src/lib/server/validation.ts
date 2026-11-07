@@ -1,7 +1,7 @@
 import { z } from "zod";
-import { MatchSchema, type Analysis, type Answers, type Criterion, type Match, type ProfileQuestion } from "../schema";
+import { MatchSchema, type Analysis, type Answers, type Match } from "../schema";
 import { AppError } from "./errors";
-import { applicationDeadlines, deadlineEnd, deadlinePassed, kstISO, looksLikeApplication, parseKoreanDates, reconcileDates } from "../dates";
+import { deadlineEnd, deadlinePassed, kstISO, looksLikeApplication, reconcileDates } from "../dates";
 
 const invalidOutput = () => new AppError("bad_output", "AI 결과에 누락되거나 서로 맞지 않는 정보가 있어요. 다시 분석해 주세요.", 502);
 function unique(values: (string | number)[]) { return new Set(values).size === values.length; }
@@ -18,8 +18,27 @@ export function validateAnalysis(a: Analysis, pageCount?: number) {
   if (!unique(a.transcript.map((t) => t.page))) throw invalidOutput();
   const evidence = [...a.benefits, ...a.schedule, ...a.how_to_apply, ...a.eligibility, ...a.documents, ...a.cautions, ...a.glossary].flatMap((i) => i.evidence).concat(a.contact_evidence ?? []);
   if (pageCount && [...evidence, ...a.transcript].some((e) => e.page > pageCount)) throw invalidOutput();
-  // 일정 날짜를 원문 표기와 대조하고 접수 마감을 추정한다(제자리 수정, 여러 번 불러도 같다).
+  // 일정 날짜를 원문 표기와 대조해 맞지 않으면 비운다(제자리 수정, 여러 번 불러도 같다).
   reconcileDates(a);
+}
+
+const STARTS = /시작|개시/;
+
+/**
+ * 공고 전체의 접수 상태를 정한다(서버 단일 출처). analyze에서 인용 검증 뒤, 서명 전에 한 번 부른다. 모델이 넣은 값은 덮어쓴다.
+ * 확정 마감 = 모델이 접수 마감으로 표시했고, 날짜가 원문과 맞으며, 인용이 원문에서 확인된 일정(시작 일정은 제외).
+ * 접수 관련 일정 중 날짜가 없거나, 인용이 확인되지 않았거나, 마지막 확정 마감보다 뒤(다음 회차일 수 있음)인 것이 있으면
+ * closed로 단정하지 않는다. 그 밖에는 unknown.
+ */
+export function settleApplication(a: Analysis, unverifiedSchedule: number[], now = new Date()) {
+  const rows = a.schedule.map((s, i) => ({ s, sure: !s.date_uncertain && !!deadlineEnd(s) && !unverifiedSchedule.includes(i) }))
+    .filter(({ s }) => s.is_application_deadline || looksLikeApplication(s));
+  const confirmed = rows.filter(({ s, sure }) => sure && s.is_application_deadline && !STARTS.test(s.label)).map(({ s }) => s);
+  const upcoming = confirmed.filter((s) => !deadlinePassed(s, now)).map((s) => s.date_iso!).sort();
+  const last = confirmed.map((s) => s.date_iso!).sort().at(-1);
+  const closed = !upcoming.length && !!last && rows.every(({ s, sure }) => sure && s.date_iso! <= last);
+  a.application_status = upcoming.length ? "open" : closed ? "closed" : "unknown";
+  a.application_deadline_iso = upcoming[0] ?? (closed && last ? last : null);
 }
 
 const unsure = (s: string) => /모르|몰라|모름|확인\s*필요|잘\s*모/.test(s);
@@ -54,83 +73,13 @@ const CHECK_HOW = "공고문 원문과 관련 서류를 확인하고 담당 기�
 const NEED_ANSWER = "이 조건을 판단하는 데 필요한 답변이 부족하거나 불확실해요.";
 // 조건 설명에 예외·연장·단서가 있으면 일부 답변만으로 탈락을 확정하지 않는다.
 const EXCEPTION = /연장|예외|제외|단\s*,|다만|경우에는/;
-// 나이 조건은 병역 연장 같은 표현을 더 넓게 본다. 걸리면 서버 계산으로 판정을 뒤집지 않는다.
-const AGE_EXCEPTION = /연장|예외|제외|단\s*,|다만|경우|병역|군\s*복무|군필|복무|비례|늘어|늘려|상향|가산/;
 const toCheck = (c: Judged, reason: string): Judged => ({ ...c, status: "check", failed_answer_ids: [], reason, how_to_check: CHECK_HOW });
-
-// 원문 인용에서 '만 N세 이상/이하/미만/초과'를 뽑는다. 상한·하한이 둘 이상이면 모호해서 null.
-function ageBounds(text: string) {
-  if (!/만\s*\d{1,2}\s*세|만\s*\d{1,2}\s*[~∼～〜-]/.test(text)) return null;
-  const mins = new Set<string>(), maxes = new Set<string>();
-  const rest = text.replace(/(\d{1,2})\s*(?:세\s*)?(?:이상\s*)?(?:~|∼|～|〜|-|부터)\s*(?:만\s*)?(\d{1,2})\s*세\s*(이하|미만|까지)?/g, (_, lo, hi, kind) => {
-    mins.add(`${lo}:1`);
-    maxes.add(`${hi}:${kind === "미만" ? 0 : 1}`);
-    return " ";
-  });
-  for (const [, n, kind] of rest.matchAll(/(\d{1,2})\s*세\s*(이상|이하|미만|초과)/g)) {
-    if (kind === "이상" || kind === "초과") mins.add(`${n}:${kind === "이상" ? 1 : 0}`);
-    else maxes.add(`${n}:${kind === "이하" ? 1 : 0}`);
-  }
-  if (mins.size > 1 || maxes.size > 1 || mins.size + maxes.size === 0) return null;
-  const parse = (v?: string) => v ? { age: Number(v.split(":")[0]), inclusive: v.endsWith(":1") } : null;
-  return { min: parse([...mins][0]), max: parse([...maxes][0]) };
-}
-
-function fullAge(birth: string, on: string) {
-  const [by, bm, bd] = birth.split("-").map(Number), [y, m, d] = on.split("-").map(Number);
-  return y - by - (m < bm || (m === bm && d < bd) ? 1 : 0);
-}
-
-// 나이 기준일 후보. 원문에 기준일이 있으면 그 날짜, 없으면 공고일·접수 마감일·오늘 모두(판정이 같을 때만 쓴다).
-function ageBaseDates(a: Analysis, text: string, now: Date): string[] | null {
-  const today = kstISO(now);
-  const deadlines = applicationDeadlines(a).flatMap((s) => s.date_iso ? [s.date_iso] : []);
-  const stated = parseKoreanDates(text).filter((x) => x.year !== null && /^[\s.)\]]*(?:기준|현재)/.test(text.slice(x.end)));
-  if (stated.length) {
-    const dates = new Set(stated.map((x) => `${x.year}-${String(x.month).padStart(2, "0")}-${String(x.day).padStart(2, "0")}`));
-    return dates.size === 1 ? [...dates] : null;
-  }
-  const notice = a.schedule.filter((s) => s.date_iso && /공고일/.test(s.label)).map((s) => s.date_iso!);
-  if (/공고일[^가-힣]{0,20}(?:기준|현재)/.test(text)) return notice.length === 1 ? notice : null;
-  if (/(?:신청|접수)\s*일?[^가-힣]{0,3}(?:기준|현재)/.test(text)) return [today, ...deadlines];
-  if (/기준|현재/.test(text)) return null;
-  const basis = a.schedule.filter((s) => s.date_iso && /기준일/.test(s.label)).map((s) => s.date_iso!);
-  if (basis.length === 1) return basis;
-  return [...new Set([...notice, ...deadlines, today])];
-}
-
-/**
- * 생년월일 계산은 확인 필요 또는 미충족으로 내릴 때만 쓴다. 복합 조건을 충족으로 올리지 않는다.
- * 예외·연장 문구가 있거나 기준일에 따라 결과가 갈리면 check. 나이 조건을 뽑지 못하면 그대로 둔다.
- */
-function judgeAge(a: Analysis, e: Criterion, related: ProfileQuestion[], answers: Answers, c: Judged, now: Date): Judged {
-  const births = related.filter((q) => q.input === "date" && BIRTH.test(q.label));
-  const birth = births.length === 1 ? answers[births[0].id]?.trim() : undefined;
-  if (c.status === "check" || !birth || !/^\d{4}-\d{2}-\d{2}$/.test(birth)) return c;
-  const quotes = e.evidence.map((x) => x.quote).join("\n");
-  const text = [e.requirement, e.detail ?? "", quotes].join("\n");
-  const bounds = ageBounds(quotes);
-  // 출생 기간이 적힌 조건은 그 기간이 기준이라 기준일을 추정하지 않는다.
-  const bases = bounds && !/출생|년생/.test(text) ? ageBaseDates(a, text, now) : null;
-  if (!bounds || !bases?.length) return c;
-  const ok = (age: number) => (!bounds.min || (bounds.min.inclusive ? age >= bounds.min.age : age > bounds.min.age)) &&
-    (!bounds.max || (bounds.max.inclusive ? age <= bounds.max.age : age < bounds.max.age));
-  const ages = bases.map((base) => fullAge(birth, base));
-  if (ages.some((age) => age < 0)) return c;
-  if (ages.some((age) => ok(age) !== ok(ages[0]))) return toCheck(c, "기준일에 따라 만 나이 판정이 달라질 수 있어 확인이 필요해요.");
-  if (ok(ages[0])) return c;
-  if (c.status === "not_met" && c.failed_answer_ids.length) return c;
-  if (AGE_EXCEPTION.test(text)) return toCheck(c, `생년월일 기준 만 ${ages[0]}세로 계산되지만 예외·연장 조건이 있어 확인이 필요해요.`);
-  const limit = [bounds.min && `만 ${bounds.min.age}세 ${bounds.min.inclusive ? "이상" : "초과"}`, bounds.max && `만 ${bounds.max.age}세 ${bounds.max.inclusive ? "이하" : "미만"}`].filter(Boolean).join(" ");
-  return { ...c, status: "not_met", failed_answer_ids: [births[0].id],
-    reason: `생년월일 기준 만 ${ages[0]}세(${bases[0]} 기준)예요. 공고 기준은 ${limit}이에요.` };
-}
 
 /**
  * 모델 출력의 사소한 이탈은 받아 주고(빠진 조건은 check로 보충, 모르는 id는 버림, 상충하는 중복은 check),
  * 근거가 부족한 결론은 check로 내린다. 접수 마감과 서류 일정은 서버가 정한다.
  */
-export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unverifiedCriteria: string[] = [], now = new Date()): Match {
+export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unverifiedCriteria: string[] = []): Match {
   const docIds = new Set(a.documents.map((d) => d.id));
   const judged = new Map<string, Judged>();
   for (const c of match.criteria) {
@@ -147,7 +96,7 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
     if (!model) return toCheck({ criterion_id: e.id, status: "check", reason: "", how_to_check: null, failed_answer_ids: [] }, "AI가 이 조건을 판정하지 않았어요. 직접 확인이 필요해요.");
     const cited = [...new Set(model.failed_answer_ids ?? [])];
     if (cited.some((id) => !related.some((q) => q.id === id))) return toCheck(model, "판정 근거로 든 답변이 이 조건과 맞지 않아 확인이 필요해요.");
-    const c = judgeAge(a, e, related, answers, { ...model, failed_answer_ids: model.status === "not_met" ? cited : [] }, now);
+    const c = { ...model, failed_answer_ids: model.status === "not_met" ? cited : [] };
     const unanswered = !related.length || related.some((q) => !answered(q.id));
     const text = [e.requirement, e.detail ?? "", ...e.evidence.map((x) => x.quote)].join("\n");
     if (c.status === "check") return c;
@@ -169,24 +118,19 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
     needs_check: "확인이 더 필요한 조건이 있어요. 아래 항목을 확인한 뒤 신청을 준비해 주세요.",
     likely_eligible: "입력한 정보로는 필수 자격과 제외 조건을 충족할 가능성이 있어요. 최종 자격은 기관 심사로 결정돼요.",
   };
-  const deadlines = applicationDeadlines(a);
-  const periods = a.schedule.filter((s) => s.is_application_deadline || looksLikeApplication(s));
-  const unconfirmed = periods.some((s) => !deadlines.includes(s) || !deadlineEnd(s));
-  const expired = deadlines.length > 0 && !unconfirmed && deadlines.every((s) => deadlinePassed(s, now));
-  // 접수 마감이 있는데 날짜를 확정하지 못했고 열려 있는 회차도 없으면 '가능'을 확정하지 않는다.
-  const unclear = !expired && deadlines.length > 0 && unconfirmed && !deadlines.some((s) => deadlineEnd(s) && !deadlinePassed(s, now));
+  // 접수 상태는 analyze에서 서명 전에 정한 값만 쓴다(화면과 같은 출처).
+  const expired = a.application_status === "closed";
+  // 접수 마감으로 표시된 날짜가 원문과 맞지 않아 비워졌고 열린 회차도 확정하지 못했으면 '가능'을 확정하지 않는다.
+  const unclear = a.application_status === "unknown" && a.schedule.some((s) => s.is_application_deadline && s.date_uncertain);
   // Meeting personal criteria does not reopen an expired (or unconfirmed) application period.
   const heldBack = (expired || unclear) && overall === "likely_eligible";
   if (heldBack) overall = "needs_check";
-  const lastDay = unconfirmed ? undefined : deadlines.flatMap((s) => s.date_iso ? [s.date_iso] : []).sort().at(-1);
   const ids = new Set<string>();
   const checklist = match.checklist.map((t) => {
     let id = t.id;
     for (let n = 2; ids.has(id); n++) id = `${t.id.slice(0, 36)}_${n}`;
     ids.add(id);
-    // 신청·서류 준비는 접수 마감을 넘길 수 없다.
-    const late = (t.kind === "apply" || t.kind === "document") && lastDay && t.due_date_iso && t.due_date_iso > lastDay;
-    return { ...t, id, document_id: t.document_id && docIds.has(t.document_id) ? t.document_id : null, due_date_iso: late ? lastDay : t.due_date_iso };
+    return { ...t, id, document_id: t.document_id && docIds.has(t.document_id) ? t.document_id : null };
   }).filter((t) => (!expired && overall !== "likely_ineligible") || (t.kind !== "document" && t.kind !== "apply"));
   if (expired) {
     let id = "verify_reopening";
@@ -209,8 +153,6 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
       kind: "apply", due_date_iso: null, document_id: null, priority: "high",
     });
   }
-  const order = { verify: 0, document: 1, apply: 2, schedule: 3 };
-  checklist.sort((x, y) => order[x.kind] - order[y.kind]);
   checklist.splice(100);
   const overallMessage = expired
     ? `공고문에 적힌 접수 마감일이 모두 지났어요. 추가 모집 여부와 새 접수 기간을 먼저 확인해 주세요.${overall === "likely_ineligible" ? " 입력한 조건에도 미충족 항목이 있어요." : ""}`

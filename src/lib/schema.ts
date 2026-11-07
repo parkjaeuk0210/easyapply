@@ -33,7 +33,7 @@ export const AnalysisSchema = z.object({
       time: z.string().regex(/^(?:[01]\d|2[0-3]):[0-5]\d$/).nullable(),
       is_deadline: z.boolean(),
       is_application_deadline: z.boolean().prefault(false),
-      // 서버가 채우는 값: 접수 마감 플래그가 없어 일정 이름으로 추정한 마감인지.
+      // 예전 호환용. 서버는 접수 마감을 추정하지 않으므로 항상 false.
       deadline_inferred: z.boolean().prefault(false).describe("서버 전용 값. 항상 false로 두세요."),
       // 서버가 채우는 값: date_iso가 date_text와 맞지 않아 비운 경우 true.
       date_uncertain: z.boolean().prefault(false).describe("서버 전용 값. 항상 false로 두세요."),
@@ -83,6 +83,9 @@ export const AnalysisSchema = z.object({
   contact_evidence: z.array(EvidenceSchema).max(10).prefault([]),
   reading_notes: text().nullable(),
   transcript: z.array(z.object({ page: z.number().int().min(1).max(MAX_DOCUMENT_PAGES), text: z.string().max(30_000) })).max(MAX_DOCUMENT_PAGES),
+  // 서버 전용: 인용 검증 뒤 서버가 정하는 공고 전체 접수 상태와 기준 마감일. 판정과 화면이 이 값만 쓴다.
+  application_status: z.enum(["open", "closed", "unknown"]).prefault("unknown").describe("서버 전용 값. 항상 unknown으로 두세요."),
+  application_deadline_iso: date().prefault(null).describe("서버 전용 값. 항상 null로 두세요."),
 });
 
 export const MatchSchema = z.object({

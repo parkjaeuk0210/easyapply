@@ -566,8 +566,8 @@ function ResultHeader({ a, note, matched, onCheck }: { a: Analysis; note: string
       {a.organization && <p className="text-[15px] text-ink-2">{a.organization}</p>}
       <h1 id="result-title" className="mt-1 text-[22px] font-extrabold leading-snug tracking-[-0.01em] text-ink sm:text-[26px]">{a.title}</h1>
       <p className="mt-2 text-[16px] leading-relaxed text-ink-2">{a.one_line}</p>
-      {!deadline ? (
-        <p className="mt-3 text-[16px] text-ink-2">마감일을 찾지 못했어요. 원문에서 확인해 주세요.</p>
+      {deadline.days === null ? (
+        <p className="mt-3 text-[16px] text-ink-2">{deadline.text}</p>
       ) : !expired && (
         <p className="mt-3 text-[17px] font-bold text-ink">
           {deadline.text}{" "}

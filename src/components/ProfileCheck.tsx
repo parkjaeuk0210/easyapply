@@ -259,13 +259,6 @@ const OVERALL = {
 };
 const DISCLAIMER = "최종 자격은 기관 심사로 정해져요.";
 
-const KIND = {
-  verify: "자격 확인",
-  document: "서류 준비",
-  apply: "신청하기",
-  schedule: "기억할 일정",
-};
-
 type Result = Match["criteria"][number];
 
 /** 조건 종류에 맞춰 결과를 낱말 하나로 */
@@ -456,42 +449,34 @@ function MatchResult({ a, match, answers, extra, docKey, fresh, onShown, onEdit 
 
       <Card className="p-5">
         <SectionTitle>신청 준비 체크리스트</SectionTitle>
-        {(Object.keys(KIND) as (keyof typeof KIND)[]).map((k) => {
-          const items = match.checklist.filter((t) => t.kind === k);
-          if (!items.length) return null;
-          return (
-            <div key={k} className="mb-4 last:mb-0">
-              <h4 className="mb-1 text-[15px] font-semibold text-muted">{KIND[k]}</h4>
-              <ul className="divide-y divide-line">
-                {items.map((t) => {
-                  const doc = t.document_id ? docs.get(t.document_id) : null;
-                  const due = koDate(t.due_date_iso);
-                  const past = (daysUntil(t.due_date_iso) ?? 0) < 0;
-                  return (
-                    <li key={t.id} className="flex gap-3 py-3">
-                      <input
-                        id={`task-${t.id}`}
-                        type="checkbox"
-                        checked={!!done[t.id]}
-                        onChange={() => toggle(t.id)}
-                        className="mt-1 h-5 w-5 shrink-0 accent-[var(--ok)]"
-                      />
-                      <div className="min-w-0 flex-1">
-                        <label htmlFor={`task-${t.id}`} className={`cursor-pointer text-[16px] font-semibold ${done[t.id] ? "text-muted line-through" : "text-ink"}`}>
-                          {t.title}
-                          {t.priority === "high" && !done[t.id] && <span className="ml-2 text-[14px] font-semibold text-bad">중요</span>}
-                        </label>
-                        {t.detail && <p className="mt-0.5 whitespace-pre-line text-[15px] leading-relaxed text-ink-2">{t.detail}</p>}
-                        {due && <p className="mt-1 text-[14px] text-ink-2">{due}까지{past ? " (지났어요)" : ""}</p>}
-                        {doc && <EvidenceLinks evidence={doc.evidence} className="no-print mt-2" />}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          );
-        })}
+        {/* 모델이 낸 순서 그대로 한 목록으로 보여 준다(종류별로 다시 묶지 않는다). */}
+        <ul className="divide-y divide-line">
+          {match.checklist.map((t) => {
+            const doc = t.document_id ? docs.get(t.document_id) : null;
+            const due = koDate(t.due_date_iso);
+            const past = (daysUntil(t.due_date_iso) ?? 0) < 0;
+            return (
+              <li key={t.id} className="flex gap-3 py-3">
+                <input
+                  id={`task-${t.id}`}
+                  type="checkbox"
+                  checked={!!done[t.id]}
+                  onChange={() => toggle(t.id)}
+                  className="mt-1 h-5 w-5 shrink-0 accent-[var(--ok)]"
+                />
+                <div className="min-w-0 flex-1">
+                  <label htmlFor={`task-${t.id}`} className={`cursor-pointer text-[16px] font-semibold ${done[t.id] ? "text-muted line-through" : "text-ink"}`}>
+                    {t.title}
+                    {t.priority === "high" && !done[t.id] && <span className="ml-2 text-[14px] font-semibold text-bad">중요</span>}
+                  </label>
+                  {t.detail && <p className="mt-0.5 whitespace-pre-line text-[15px] leading-relaxed text-ink-2">{t.detail}</p>}
+                  {due && <p className="mt-1 text-[14px] text-ink-2">{due}까지{past ? " (지났어요)" : ""}</p>}
+                  {doc && <EvidenceLinks evidence={doc.evidence} className="no-print mt-2" />}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
         <div className="no-print mt-5 flex flex-wrap gap-2 border-t border-line pt-4">
           {hasUpcoming && <ActionBtn onClick={addToCalendar}>캘린더에 추가</ActionBtn>}
           <ActionBtn onClick={copyText}>{copied ? "복사했어요" : "복사하기"}</ActionBtn>

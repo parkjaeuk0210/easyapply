@@ -2,11 +2,11 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { crc32 } from 'node:zlib';
 import { AnalysisSchema, MatchSchema, type Analysis } from '../src/lib/schema';
-import { validateAnalysis, validateAnswers, finalizeMatch } from '../src/lib/server/validation';
+import { validateAnalysis, validateAnswers, finalizeMatch, settleApplication } from '../src/lib/server/validation';
 import { verifyEvidence } from '../src/lib/server/uploads';
 import { extractHangul } from '../src/lib/server/hangul';
 import { buildIndex, locate, normalize } from '../src/lib/textmatch';
-import { buildIcs, deadlineDays, deadlineEnd, deadlinePassed, mainDeadline, parseKoreanDates } from '../src/lib/dates';
+import { buildIcs, deadlineEnd, deadlinePassed, parseKoreanDates } from '../src/lib/dates';
 import { ANALYZE_SYSTEM, MATCH_SYSTEM } from '../src/lib/prompts';
 import sample from './fixtures/samples/garam-analysis.json';
 
@@ -37,8 +37,10 @@ function model(statuses: Record<string, 'met' | 'not_met' | 'check'>, failed: Re
 }
 const kst = (s: string) => new Date(`${s}+09:00`);
 
-// ── B1 접수 마감 추정 ────────────────────────────────────────────
-test('B1: a missing application flag no longer hides the closed Hwaseong period', () => {
+// ── B1 접수 마감: 서버는 추정하지 않는다(3차 수리 C) ───────────────────
+// 2차까지는 플래그 없는 접수 기간을 서버가 마감으로 추정했다. 3차 설계에서 추정을 지웠으므로
+// 같은 입력은 마감 미확정(unknown)이 정답이다. 신청 할 일은 지우지 않는다.
+test('B1: a missing application flag is not inferred; the deadline stays unknown instead of closed', () => {
   const a = base();
   a.schedule = [
     entry('모집 기간 (청년일경험 포털 온라인 접수)', '2026. 5. 8(금) ~ 5. 17(일) 자정', '2026-05-17', { is_deadline: true }),
@@ -46,22 +48,21 @@ test('B1: a missing application flag no longer hides the closed Hwaseong period'
     entry('ZOOM 화상 면접', '2026. 5. 22 (금) ~ 2026. 5. 28(목) 09:00~18:00', '2026-05-22'),
   ];
   validateAnalysis(a, 1);
-  const inferred = a.schedule[0];
-  assert.equal(inferred.is_application_deadline, true);
-  assert.equal(inferred.deadline_inferred, true);
-  assert.equal(inferred.time, '23:59');
-  assert.equal(a.schedule.filter((s) => s.is_application_deadline).length, 1);
+  const period = a.schedule[0];
+  assert.equal(period.is_application_deadline, false);
+  assert.equal(period.deadline_inferred, false);
+  assert.equal(period.time, '23:59', 'midnight still means the end of that day');
   assert.equal(a.schedule[2].date_iso, '2026-05-22', 'non-deadline ranges keep their start date');
-  assert.equal(mainDeadline(a, '2026-11-06')?.label, inferred.label);
-  const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }), [], kst('2026-11-06T12:00:00'));
-  assert.equal(r.overall, 'needs_check');
-  assert.match(r.overall_message, /마감일이 모두 지났/);
+  settleApplication(a, [], kst('2026-11-06T12:00:00'));
+  assert.deepEqual([a.application_status, a.application_deadline_iso], ['unknown', null]);
+  const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }));
+  assert.doesNotMatch(r.overall_message, /마감일이 모두 지났/);
 });
 
-test('B1: bounded application schedules are inferred per round, follow-up stages are not', () => {
+test('B1: no schedule is inferred as an application deadline; a later unflagged round blocks closed', () => {
   const a = AnalysisSchema.parse(structuredClone(sample.analysis));
   validateAnalysis(a, 2);
-  assert.deepEqual(a.schedule.filter((s) => s.is_application_deadline).map((s) => [s.label, s.date_iso, s.time, s.deadline_inferred]), [['신청 마감', '2026-12-04', '18:00', true]]);
+  assert(a.schedule.every((s) => !s.is_application_deadline && !s.deadline_inferred));
   const b = base();
   b.schedule = [entry('선정자 서류 제출 마감', '2026. 12. 20.', '2026-12-20', { is_deadline: true }), entry('결과 발표', '2027. 1. 5.', '2027-01-05')];
   validateAnalysis(b, 1);
@@ -69,9 +70,11 @@ test('B1: bounded application schedules are inferred per round, follow-up stages
   const flagged = base();
   flagged.schedule = [entry('신청 접수 마감', '2026. 11. 30.', '2026-11-30', { is_deadline: true, is_application_deadline: true }), entry('추가 모집 기간', '2026. 12. 1. ~ 12. 10.', '2026-12-10')];
   validateAnalysis(flagged, 1);
-  // An explicit first round must not hide a separately bounded later round.
-  assert.deepEqual(flagged.schedule.map((s) => s.deadline_inferred), [false, true]);
-  const r = finalizeMatch(flagged, { q1: '25' }, model({ c1: 'met' }), [], kst('2026-12-05T12:00:00'));
+  // An explicit first round must not close the notice while a later round is listed.
+  assert.deepEqual(flagged.schedule.map((s) => s.deadline_inferred), [false, false]);
+  settleApplication(flagged, [], kst('2026-12-05T12:00:00'));
+  assert.equal(flagged.application_status, 'unknown');
+  const r = finalizeMatch(flagged, { q1: '25' }, model({ c1: 'met' }));
   assert.equal(r.overall, 'likely_eligible');
   assert.doesNotMatch(r.overall_message, /마감일이 모두 지났/);
 });
@@ -86,7 +89,9 @@ test('B2: an exact quote with a contradicting date_iso no longer yields likely_e
   assert.equal(a.schedule[0].date_uncertain, true);
   const v = verifyEvidence(a, buildIndex([{ page: 1, items: [`신청 자격은 만 19세 이상 34세 이하입니다. ${quote}`] }], 'pdf'));
   assert.equal(v.exact, 2);
-  const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }), v.unverified_criteria, kst('2026-11-07T12:00:00'));
+  settleApplication(a, v.unverified_schedule, kst('2026-11-07T12:00:00'));
+  assert.equal(a.application_status, 'unknown');
+  const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }), v.unverified_criteria);
   assert.equal(r.overall, 'needs_check');
   assert.match(r.overall_message, /접수 마감일/);
   assert.doesNotMatch(buildIcs(a, r), /2027/);
@@ -94,19 +99,20 @@ test('B2: an exact quote with a contradicting date_iso no longer yields likely_e
   assert.equal(a.schedule[0].date_uncertain, true, 'reconciliation is idempotent on the match route');
 });
 
-test('B2: range deadlines use the end date and midnight becomes 23:59 of that day', () => {
+// 2차까지는 기간의 시작일·자정 다음 날을 끝 날짜로 바꿔 썼다. 3차 설계(E)에서 바꿔 쓰기를 지웠으므로
+// 맞는 끝 날짜는 그대로 두고(시각만 맞춤), 시작일을 마감으로 준 경우는 아래 테스트처럼 비운다.
+test('B2: range deadlines keep a matching end date and midnight becomes 23:59 of that day', () => {
   const cases: [string, string, string | null, string, string][] = [
-    ['2026. 5. 8(금) ~ 5. 17(일) 자정', '2026-05-08', null, '2026-05-17', '23:59'],
+    ['2026. 5. 8(금) ~ 5. 17(일) 자정', '2026-05-17', null, '2026-05-17', '23:59'],
     ['2026. 5. 8(금) ~ 5. 17(일) 자정', '2026-05-17', '00:00', '2026-05-17', '23:59'],
-    ['2026. 5. 8(금) ~ 5. 17(일) 자정', '2026-05-18', '00:00', '2026-05-17', '23:59'],
     ['2026. 5. 17.(일) 24:00까지', '2026-05-17', null, '2026-05-17', '23:59'],
-    ['2026. 11. 16.(월) 10:00 ~ 2026. 12. 4.(금) 18:00', '2026-11-16', '10:00', '2026-12-04', '18:00'],
-    ['2026년 5월 1일부터 5월 17일까지', '2026-05-01', null, '2026-05-17', '23:59:59'],
+    ['2026. 11. 16.(월) 10:00 ~ 2026. 12. 4.(금) 18:00', '2026-12-04', null, '2026-12-04', '18:00'],
+    ['2026년 5월 1일부터 5월 17일까지', '2026-05-17', null, '2026-05-17', '23:59:59'],
     ['5월 17일(일) 오후 6시', '2026-05-17', null, '2026-05-17', '18:00'],
     ["'26.5.17 18:00", '2026-05-17', null, '2026-05-17', '18:00'],
     ['’26. 5. 17', '2026-05-17', null, '2026-05-17', '23:59:59'],
     ['2026.05.17', '2026-05-17', null, '2026-05-17', '23:59:59'],
-    ['2026. 12. 28.(월) ~ 1. 5.(화)', '2026-12-28', null, '2027-01-05', '23:59:59'],
+    ['2026. 12. 28.(월) ~ 1. 5.(화)', '2027-01-05', null, '2027-01-05', '23:59:59'],
   ];
   for (const [text, iso, time, want, wantTime] of cases) {
     const a = base();
@@ -119,8 +125,12 @@ test('B2: range deadlines use the end date and midnight becomes 23:59 of that da
   }
 });
 
-test('B2: wrong weekday, guessed year and invented days become uncertain', () => {
+test('B2: wrong weekday, guessed year, invented days and range starts given as deadlines become uncertain', () => {
   const cases: [string, string][] = [
+    ['2026. 5. 8(금) ~ 5. 17(일) 자정', '2026-05-08'], // a deadline at the start of its range is not moved to the end
+    ['2026. 5. 8(금) ~ 5. 17(일) 자정', '2026-05-18'], // '자정' written as the next day is not rewritten
+    ['2026. 11. 16.(월) 10:00 ~ 2026. 12. 4.(금) 18:00', '2026-11-16'],
+    ['2026. 12. 28.(월) ~ 1. 5.(화)', '2026-12-28'],
     ['2026. 5. 17.(토)', '2026-05-17'], // 2026-05-17 is a Sunday
     ['5. 17(일)', '2027-05-17'], // year guessed from today: weekday disagrees
     ['5월 17일', '2027-05-17'], // no weekday and 2027 never appears in the notice
@@ -183,26 +193,20 @@ test('B3: a stated deadline time is not extended by 59 seconds and D-day respect
   assert.equal(deadlinePassed(dateOnly, kst('2026-11-06T23:59:00')), false);
   assert.equal(deadlinePassed(dateOnly, kst('2026-11-07T00:00:01')), true);
   const a = base(); a.schedule = [s];
-  const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }), [], kst('2026-11-06T18:00:30'));
+  settleApplication(a, [], kst('2026-11-06T18:00:30'));
+  assert.deepEqual([a.application_status, a.application_deadline_iso], ['closed', '2026-11-06']);
+  const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }));
   assert.equal(r.overall, 'needs_check');
-  assert.equal(deadlineDays(s, kst('2026-11-06T17:00:00')), 0);
-  assert.equal(deadlineDays(s, kst('2026-11-06T21:00:00')), -1);
+  settleApplication(a, [], kst('2026-11-06T17:00:00'));
+  assert.deepEqual([a.application_status, a.application_deadline_iso], ['open', '2026-11-06']);
   a.schedule.push({ ...s, date_iso: '2026-11-20', date_text: '2026. 11. 20. 18:00' });
-  assert.equal(mainDeadline(a, '2026-11-06', kst('2026-11-06T19:00:00'))?.date_iso, '2026-11-20');
+  settleApplication(a, [], kst('2026-11-06T19:00:00'));
+  assert.deepEqual([a.application_status, a.application_deadline_iso], ['open', '2026-11-20']);
 });
 
-test('B3: application and document tasks are pulled back to the application deadline', () => {
-  const a = base();
-  a.schedule = [entry('신청 접수 마감', '2026. 11. 06. 18:00', '2026-11-06', { time: '18:00', is_deadline: true, is_application_deadline: true })];
-  const m = model({ c1: 'met' });
-  m.checklist = [
-    { id: 't1', title: '신청서 제출', detail: null, kind: 'apply', due_date_iso: '2026-12-31', document_id: null, priority: 'high' },
-    { id: 't2', title: '결과 발표 확인', detail: null, kind: 'schedule', due_date_iso: '2026-12-31', document_id: null, priority: 'normal' },
-  ];
-  const r = finalizeMatch(a, { q1: '25' }, m, [], kst('2026-11-05T12:00:00'));
-  assert.equal(r.checklist.find((t) => t.id === 't1')?.due_date_iso, '2026-11-06');
-  assert.equal(r.checklist.find((t) => t.id === 't2')?.due_date_iso, '2026-12-31');
-});
+// 'B3: application and document tasks are pulled back to the application deadline'는 삭제했다.
+// 3차 추가 지시로 할 일 기한을 접수 마감으로 당기는 처리를 지웠다(당첨 뒤 서류 제출 기간이 따로 있는 공고를 망침).
+// 새 동작은 tests/review-round3.test.ts의 '체크리스트 2'가 고정한다.
 
 // ── B4 관대한 입력, 보수적 결론 ────────────────────────────────
 function many(n: number) {
@@ -288,34 +292,16 @@ function ageAnalysis(quote: string, detail: string | null = null) {
 }
 const NOW = kst('2026-11-07T12:00:00');
 
-test('B5: the server computes full age when the model contradicts it', () => {
+// 2차까지는 서버가 생년월일로 만 나이를 계산해 판정을 덮어썼다. 3차 설계(D)에서 계산을 통째로 지웠으므로
+// 모델 판정이 그대로 서고, 근거 답변이 없는 미충족·빈 답변의 충족만 check로 내린다.
+test('B5: the server no longer recomputes age; the model verdict stands', () => {
   const a = ageAnalysis('만 18세 이상 ~ 34세 이하 미취업 청년');
-  const old = finalizeMatch(a, { q1: '1985-03-01' }, model({ c1: 'met' }), [], NOW);
-  assert.equal(old.criteria[0].status, 'not_met');
-  assert.deepEqual(old.criteria[0].failed_answer_ids, ['q1']);
-  assert.match(old.criteria[0].reason, /생년월일 기준 만 41세/);
-  assert.equal(old.overall, 'likely_ineligible');
-  const young = finalizeMatch(a, { q1: '1999-03-15' }, model({ c1: 'not_met' }, { c1: ['q1'] }), [], NOW);
-  // A passing age calculation cannot prove the other parts of a composite criterion.
+  assert.equal(finalizeMatch(a, { q1: '1985-03-01' }, model({ c1: 'met' })).criteria[0].status, 'met');
+  const young = finalizeMatch(a, { q1: '1999-03-15' }, model({ c1: 'not_met' }, { c1: ['q1'] }));
   assert.equal(young.criteria[0].status, 'not_met');
   assert.equal(young.criteria[0].reason, '모델 판정');
-  const agreeing = finalizeMatch(a, { q1: '1985-03-01' }, model({ c1: 'not_met' }), [], NOW);
-  assert.equal(agreeing.criteria[0].status, 'not_met', 'an agreeing server result supplies the missing evidence');
-});
-
-test('B5: extensions, borderline base dates and birth-date ranges never produce a server failure', () => {
-  const ext = ageAnalysis('만 18세 이상 ~ 34세 이하 미취업 청년', '군필자는 의무복무기간에 비례하여 연장해요(최고 만 39세).');
-  assert.equal(finalizeMatch(ext, { q1: '1990-06-01' }, model({ c1: 'met' }), [], NOW).criteria[0].status, 'check');
-  const edge = ageAnalysis('만 19세 이상 만 34세 이하');
-  // 1991-11-20: 34 today, 35 at the 12-04 deadline.
-  assert.equal(finalizeMatch(edge, { q1: '1991-11-20' }, model({ c1: 'met' }), [], NOW).criteria[0].status, 'check');
-  const range = ageAnalysis('만 19세 이상 ~ 만 34세 이하 청년 (1991. 11. 7. ~ 2007. 11. 6. 출생)');
-  assert.equal(finalizeMatch(range, { q1: '1991-11-07' }, model({ c1: 'met' }), [], NOW).criteria[0].status, 'met');
-  const explicit = ageAnalysis('2026. 1. 1. 기준 만 19세 이상 34세 이하');
-  const r = finalizeMatch(explicit, { q1: '1991-06-01' }, model({ c1: 'met' }), [], NOW);
-  assert.equal(r.criteria[0].status, 'met', 'aged 34 on the stated base date');
-  const none = ageAnalysis('청년 누구나');
-  assert.equal(finalizeMatch(none, { q1: '1950-01-01' }, model({ c1: 'met' }), [], NOW).criteria[0].status, 'met');
+  assert.equal(finalizeMatch(a, { q1: '1985-03-01' }, model({ c1: 'not_met' })).criteria[0].status, 'check', 'no cited answer, no confirmed failure');
+  assert.equal(finalizeMatch(a, { q1: '' }, model({ c1: 'met' })).criteria[0].status, 'check', 'an empty related answer keeps met at check');
 });
 
 // ── B6 HWPX ─────────────────────────────────────────────────────
@@ -431,7 +417,7 @@ test('review 1: passing age never overwrites a failed residence answer in the sa
   validateAnalysis(a, 1);
   const m = model({ c1: 'not_met' }, { c1: ['q2'] });
   m.criteria[0].reason = '서울 거주 질문에 아니오라고 답했어요.';
-  const r = finalizeMatch(a, validateAnswers(a, { q1: '2000-01-01', q2: '아니오' }), m, [], NOW);
+  const r = finalizeMatch(a, validateAnswers(a, { q1: '2000-01-01', q2: '아니오' }), m);
   assert.equal(r.overall, 'likely_ineligible');
   assert.equal(r.criteria[0].status, 'not_met');
   assert.deepEqual(r.criteria[0].failed_answer_ids, ['q2']);
@@ -448,7 +434,9 @@ test('review 3: open-ended recruitment and start-only dates never infer an appli
     validateAnalysis(a, 1);
     assert.equal(a.schedule[0].deadline_inferred, false, text);
     assert.equal(a.schedule[0].is_application_deadline, false, text);
-    const r = finalizeMatch(a, { q1: '25' }, m, [], NOW);
+    settleApplication(a, [], NOW);
+    assert.equal(a.application_status, 'unknown', text);
+    const r = finalizeMatch(a, { q1: '25' }, m);
     assert.doesNotMatch(r.overall_message, /마감일이 모두 지났/, text);
     assert(r.checklist.some((t) => t.kind === 'apply'), text);
   }
@@ -461,16 +449,22 @@ test('review 3: an expired first round cannot close an ongoing or unknown second
     const m = model({ c1: 'met' });
     m.checklist = [{ id: 't1', title: '신청', kind: 'apply', detail: null, due_date_iso: '2026-11-30', document_id: null, priority: 'high' }];
     validateAnalysis(a, 1);
-    const r = finalizeMatch(a, { q1: '25' }, m, [], NOW);
+    settleApplication(a, [], NOW);
+    assert.equal(a.application_status, 'unknown', second.label);
+    const r = finalizeMatch(a, { q1: '25' }, m);
     assert.doesNotMatch(r.overall_message, /마감일이 모두 지났/);
     assert(!r.checklist.some((t) => t.id === 'verify_reopening'));
     assert.equal(r.checklist.find((t) => t.kind === 'apply')?.due_date_iso, '2026-11-30');
-    assert.equal(r.overall, second.date_iso === '2026-11-30' ? 'likely_eligible' : 'needs_check');
+    // 마감 미확정은 화면 문구로 알리고, 자격 판정 자체는 조건 답변으로만 정한다(3차: 'unclear' 보류는 비운 날짜에만).
+    assert.equal(r.overall, 'likely_eligible');
   }
+  // 2차까지는 플래그 없는 2차 '6. 30.까지'를 마감으로 추정해 closed였다. 이제는 두 회차 모두 모델이 접수 마감으로 표시해야 closed.
   const ended = base();
-  ended.schedule = [entry('1차 모집 마감', '2026. 5. 31. 종료', '2026-05-31', { is_deadline: true, is_application_deadline: true }), entry('2차 모집 기간', '2026. 6. 30.까지', '2026-06-30')];
+  ended.schedule = [entry('1차 모집 마감', '2026. 5. 31. 종료', '2026-05-31', { is_deadline: true, is_application_deadline: true }), entry('2차 모집 마감', '2026. 6. 30.까지', '2026-06-30', { is_deadline: true, is_application_deadline: true })];
   validateAnalysis(ended, 1);
-  assert.match(finalizeMatch(ended, { q1: '25' }, model({ c1: 'met' }), [], NOW).overall_message, /마감일이 모두 지났/);
+  settleApplication(ended, [], NOW);
+  assert.deepEqual([ended.application_status, ended.application_deadline_iso], ['closed', '2026-06-30']);
+  assert.match(finalizeMatch(ended, { q1: '25' }, model({ c1: 'met' })).overall_message, /마감일이 모두 지났/);
 });
 
 test('review 4: only identical criterion duplicates merge; differing status or evidence stays check in either order', () => {
@@ -486,13 +480,13 @@ test('review 4: only identical criterion duplicates merge; differing status or e
     { ...met, how_to_check: '담당 기관 확인' },
   ];
   for (const conflict of conflicts) for (const criteria of [[met, conflict], [conflict, met], [met, conflict, met]]) {
-    const r = finalizeMatch(a, { q1: '아니오' }, { ...m, criteria }, [], NOW);
+    const r = finalizeMatch(a, { q1: '아니오' }, { ...m, criteria });
     assert.equal(r.overall, 'needs_check');
     assert.equal(r.criteria.length, 1);
     assert.equal(r.criteria[0].status, 'check');
     assert.deepEqual(r.criteria[0].failed_answer_ids, []);
   }
-  const r = finalizeMatch(a, { q1: '예' }, { ...m, criteria: [met, structuredClone(met)] }, [], NOW);
+  const r = finalizeMatch(a, { q1: '예' }, { ...m, criteria: [met, structuredClone(met)] });
   assert.equal(r.criteria.length, 1);
   assert.equal(r.overall, 'likely_eligible');
 });
@@ -502,7 +496,7 @@ test('review 2: missing citations cannot become met even without a supplied veri
   for (const evidence of [[], [ev('')], [ev('   ')]]) {
     const a = base(); a.eligibility[0].evidence = evidence;
     validateAnalysis(a, 1);
-    const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }), [], NOW);
+    const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }));
     assert.equal(r.criteria[0].status, 'check');
     assert.equal(r.overall, 'needs_check');
   }
@@ -513,7 +507,9 @@ test('review 3: multiple round ends in one schedule entry cannot be closed using
   a.schedule = [entry('신청 기간', '1차 2026. 5. 1. ~ 5. 31. / 2차 2026. 11. 1. ~ 11. 30.', '2026-05-31', { is_deadline: true, is_application_deadline: true })];
   validateAnalysis(a, 1);
   assert.equal(a.schedule[0].date_iso, null);
-  const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }), [], NOW);
+  settleApplication(a, [], NOW);
+  assert.equal(a.application_status, 'unknown');
+  const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }));
   assert.equal(r.overall, 'needs_check');
   assert.doesNotMatch(r.overall_message, /마감일이 모두 지났/);
 });

@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildIcs, daysUntil, mainDeadline } from '../src/lib/dates';
+import { buildIcs, daysUntil } from '../src/lib/dates';
+import { settleApplication } from '../src/lib/server/validation';
 import { AnalysisSchema } from '../src/lib/schema';
 import sample from './fixtures/samples/garam-analysis.json';
 
@@ -22,10 +23,12 @@ test('date helpers reject invalid dates and choose last deadline independent of 
   assert.equal(daysUntil('2026-03-01','2026-02-28'),1);
   const a=AnalysisSchema.parse(sample.analysis);
   a.schedule=[{...a.schedule[0],is_deadline:true,is_application_deadline:true,date_iso:'2020-12-31'},{...a.schedule[0],is_deadline:true,is_application_deadline:true,date_iso:'2020-01-01'}];
-  assert.equal(mainDeadline(a)?.date_iso,'2020-12-31');
+  settleApplication(a,[]);
+  assert.deepEqual([a.application_status,a.application_deadline_iso],['closed','2020-12-31']);
   assert.doesNotThrow(()=>buildIcs(a,null));
 });
 
+// 화면 자체 계산(mainDeadline)을 지웠으므로 같은 입력을 서버 접수 상태(settleApplication)로 검사한다.
 test('application deadline stays closed when follow-up deadlines are still ahead', () => {
   const a = AnalysisSchema.parse(sample.analysis);
   const base = { ...a.schedule[0], is_deadline: true };
@@ -33,10 +36,14 @@ test('application deadline stays closed when follow-up deadlines are still ahead
     { ...base, label: '신청 접수 마감', date_iso: '2026-11-01', is_application_deadline: true },
     { ...base, label: '선정자 증빙 제출 마감', date_iso: '2026-11-20', is_application_deadline: false },
   ];
-  assert.equal(mainDeadline(a, '2026-11-06')?.date_iso, '2026-11-01');
+  const now = new Date('2026-11-06T12:00:00+09:00');
+  settleApplication(a, [], now);
+  assert.deepEqual([a.application_status, a.application_deadline_iso], ['closed', '2026-11-01']);
   a.schedule.shift();
-  assert.equal(mainDeadline(a, '2026-11-06'), null);
+  settleApplication(a, [], now);
+  assert.deepEqual([a.application_status, a.application_deadline_iso], ['unknown', null]);
   // Additional application rounds remain eligible as application deadlines.
   a.schedule.push({ ...base, date_iso: '2026-11-10', is_application_deadline: true });
-  assert.equal(mainDeadline(a, '2026-11-06')?.date_iso, '2026-11-10');
+  settleApplication(a, [], now);
+  assert.deepEqual([a.application_status, a.application_deadline_iso], ['open', '2026-11-10']);
 });

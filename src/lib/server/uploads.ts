@@ -120,6 +120,8 @@ export function verifyEvidence(a: Analysis, index: TextIndex | null) {
     method: index?.hasText ? index.source === "extracted" ? "extracted_text" : "pdf_text" : "unverified_scan_or_image",
     // Eligibility still requires an exact match for every quote; fuzzy never verifies a criterion.
     unverified_criteria: a.eligibility.filter((c) => !c.evidence.length || c.evidence.some((e) => confidence(e) !== "exact")).map((c) => c.id),
+    // Schedule rows (by index) whose quotes are missing or not found exactly; they cannot confirm a deadline.
+    unverified_schedule: a.schedule.flatMap((s, i) => !s.evidence.length || s.evidence.some((e) => confidence(e) !== "exact") ? [i] : []),
     page_corrections: pageCorrections,
   };
 }
