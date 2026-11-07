@@ -2,7 +2,7 @@
 
 // 'AI 맞춤 공고 찾기': 내 상황 → 공고 최대 5개 → 추천 순서. 비교는 src/lib/finder.ts의 규칙 코드가 이 기기에서 한다.
 import { useMemo, useRef, useState } from "react";
-import { AnalysisSchema, type Analysis } from "@/lib/schema";
+import { AnalysisSchema, type Analysis, type Match } from "@/lib/schema";
 import { errorMessage, responseJson } from "@/lib/client-api";
 import { cleanupUpload, uploadLargeFiles } from "@/lib/client-upload";
 import { fileMediaType } from "@/lib/filetypes";
@@ -49,7 +49,12 @@ function ago(iso?: string) {
   return hours < 1 ? "1시간 안에" : hours < 24 ? `${hours}시간 전` : `${Math.round(hours / 24)}일 전`;
 }
 
-export default function Finder({ status, canRunAI, onOpen }: { status: FinderStatus | null; canRunAI: boolean; onOpen: (file: File, response: AnalyzeResponse, profile: Profile) => void }) {
+export default function Finder({ status, canRunAI, onOpen, detailOf }: {
+  status: FinderStatus | null; canRunAI: boolean;
+  onOpen: (file: File, response: AnalyzeResponse, profile: Profile) => void;
+  /** 상세 화면에서 질문에 답해 받은 판정. 있으면 카드가 그 결과를 따른다. */
+  detailOf: (file: File) => Match | null;
+}) {
   const [step, setStep] = useState<"profile" | "notices">("profile");
   const [profile, setProfile] = useState<Profile>(EMPTY_PROFILE);
   const [items, setItems] = useState<Item[]>([]);
@@ -80,16 +85,16 @@ export default function Finder({ status, canRunAI, onOpen }: { status: FinderSta
     if (items.length + files.length > MAX_FILES) return setError(`공고는 한 번에 ${MAX_FILES}개까지 올릴 수 있어요.`);
     const limit = status?.max_upload_bytes ?? MAX_UPLOAD_BYTES;
     if (files.some((f) => f.size > limit)) return setError("너무 큰 파일이 있어요. 필요한 쪽만 따로 저장해서 올려 주세요.");
-    if (!canRunAI) return setError("지금은 분석을 할 수 없어요. 잠시 후 다시 시도해 주세요.");
+    if (status && !canRunAI) return setError("지금은 분석을 할 수 없어요. 잠시 후 다시 시도해 주세요.");
     // 고르기만 하고, '분석 시작'을 눌러야 읽기 시작한다.
     setItems((list) => [...list, ...files.map((file): Item => ({ id: nextId.current++, file, state: "ready" }))]);
   };
   const ready = items.filter((i) => i.state === "ready");
 
   const ranked = useMemo(() => rankNotices(
-    items.filter((i) => i.state === "done" && i.analysis).map((i) => ({ item: i, result: evaluateNotice(i.analysis!, i.response?.verification?.flags ?? i.response?.verification?.unverified_criteria ?? [], profile, today) })),
+    items.filter((i) => i.state === "done" && i.analysis).map((i) => ({ item: i, result: withDetail(detailOf(i.file), evaluateNotice(i.analysis!, i.response?.verification?.flags ?? i.response?.verification?.unverified_criteria ?? [], profile, today)) })),
     today,
-  ), [items, profile, today]);
+  ), [items, profile, today, detailOf]);
   const pending = items.filter((i) => i.state !== "done");
 
   if (step === "profile") return (
@@ -200,6 +205,13 @@ export default function Finder({ status, canRunAI, onOpen }: { status: FinderSta
       {ranked.length > 0 && <p className="mt-4 text-[15px] leading-relaxed text-ink-2">AI가 공고문에서 조건을 뽑고, 비교는 정해진 규칙으로 했어요. 최종 자격은 기관 심사로 정해져요.</p>}
     </section>
   );
+}
+
+// 상세 화면에서 질문에 답해 받은 판정이 있으면, 더 많은 정보로 낸 결과이므로 카드도 그 결과를 따른다.
+function withDetail(detail: Match | null, result: NoticeResult): NoticeResult {
+  if (!detail) return result;
+  const verdict: Verdict = detail.overall === "likely_eligible" ? "eligible" : detail.overall === "likely_ineligible" ? "ineligible" : "check";
+  return { ...result, verdict, remaining: verdict === "check" ? ["자세히 확인"] : [], headline: `자세히 확인한 결과: ${detail.overall_message}` };
 }
 
 const VERDICT: Record<Verdict, [string, string]> = {
