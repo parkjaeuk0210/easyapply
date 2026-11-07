@@ -46,10 +46,14 @@ test('typed answers reject invented options and unknown question IDs', () => {
   assert.throws(() => validateAnswers(a, { [q.id]:'2026-02-30' }));
   assert.doesNotThrow(() => validateAnswers(a, demo.answers));
 });
-test('blank answers and unverified source can never result in met', () => {
+test('blank answers never become met; an unmatched quote blocks met only when its numbers could not be checked', () => {
   const a = analysis(), m = match(); m.criteria.forEach(c => { c.status = 'met'; });
   const r = finalizeMatch(a, {}, m); assert.equal(r.overall, 'needs_check'); assert(r.criteria.every(c => c.status === 'check'));
-  const verified = finalizeMatch(a, demo.answers, m, [a.eligibility[0].id]); assert.equal(verified.criteria[0].status, 'check');
+  const id = a.eligibility[0].id;
+  assert.equal(finalizeMatch(a, demo.answers, m, [id]).criteria[0].status, 'met');
+  assert.equal(finalizeMatch(a, demo.answers, m, [id, `${id}#n`]).criteria[0].status, 'check');
+  m.criteria[0].status = 'not_met'; m.criteria[0].failed_answer_ids = a.profile_questions.filter(q => q.criteria_ids.includes(id)).map(q => q.id).slice(0, 1);
+  assert.equal(finalizeMatch(a, demo.answers, m, [id]).criteria[0].status, 'check');
 });
 test('preference failure does not disqualify; a missing model criterion becomes check instead of a 502', () => {
   const a = analysis(), m = match();

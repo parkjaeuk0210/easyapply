@@ -15,6 +15,7 @@ import { isLoopbackRequest } from "@/lib/server/http";
 import { readJson } from "@/lib/server/http";
 import { consumeUploads, uploadManifest } from "@/lib/server/staged-uploads";
 import { cacheKey, readCache, writeCache } from "@/lib/server/analysis-cache";
+import { buildFlags } from "@/lib/verification-flags";
 
 export const maxDuration = 300;
 export async function POST(req: Request) {
@@ -48,7 +49,7 @@ export async function POST(req: Request) {
       settleApplication(hit.analysis, hit.verification.unverified_schedule);
       const source = hit.source ? { ...hit.source, name: first.name } : undefined;
       console.info(JSON.stringify({ event: "analyze_cache_hit", request_id: requestId, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started }));
-      return json({ analysis: hit.analysis, analysis_token: signAnalysis(hit.analysis, sid, hit.verification.unverified_criteria), verification: hit.verification, source, provider, cached: true, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
+      return json({ analysis: hit.analysis, analysis_token: signAnalysis(hit.analysis, sid, hit.verification.flags ?? hit.verification.unverified_criteria), verification: hit.verification, source, provider, cached: true, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
     }
     const hangul = ["application/x-hwp", "application/hwp+zip"].includes(first.mediaType);
     let index: TextIndex | null = null, count = files.length;
@@ -65,15 +66,15 @@ export async function POST(req: Request) {
       maxTokens: analysisOutputTokens(), requestId, deadline: started + REQUEST_BUDGET_MS, pages: count,
       validate: (result) => validateAnalysis(result, count),
     });
+    // 원문 대조는 조건 문장 하나하나로 한다. 표가 섞인 한글 파일이라고 문서 전체를 미확인으로 돌리지 않는다
+    // (그러면 이미 답한 조건까지 모두 '확인 필요'가 된다). 표 구조 경고는 원문 보기의 안내 문구로 남는다.
     const checked = verifyEvidence(analysis, index);
-    // 문장 하나하나의 원문 대조 결과. 아래 문서 단위 처리(표 구조 불확실) 전에 남겨 맞춤 공고 찾기가 쓴다.
-    const verification = { ...checked, unverified_quotes: [...checked.unverified_criteria] };
-    if (extracted?.uncertainLayout) verification.unverified_criteria = analysis.eligibility.map(c => c.id);
+    const verification = { ...checked, flags: buildFlags(analysis, checked, !!extracted?.images) };
     settleApplication(analysis, verification.unverified_schedule);
     const source = extracted ? { kind: "text", name: first.name, sections: extracted.sections, warning: extracted.warning } : undefined;
     if (key) await writeCache(key, { analysis, verification, source, analyzed_at: new Date().toISOString() });
     console.info(JSON.stringify({ event: "analyze_complete", request_id: requestId, provider: used, elapsed_ms: Date.now() - started, verification: { ...verification, page_corrections_count: verification.page_corrections.length, page_corrections: verification.page_corrections.map(({ page, found_page }) => ({ page, found_page })) } }));
-    return json({ analysis, analysis_token: signAnalysis(analysis, sid, verification.unverified_criteria), verification, source, provider: used, cached: false, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
+    return json({ analysis, analysis_token: signAnalysis(analysis, sid, verification.flags), verification, source, provider: used, cached: false, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
   } catch (e) {
     const response = errorResponse(e, requestId);
     if (staged && !consumingUpload && e instanceof AppError && ["rate_limit", "daily_limit", "in_progress", "rate_limit_unavailable"].includes(e.code)) {

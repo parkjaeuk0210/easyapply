@@ -3,6 +3,7 @@ import { MatchSchema, type Analysis, type Answers, type Match } from "../schema"
 import { AppError } from "./errors";
 import { deadlineEnd, deadlinePassed, kstISO, looksLikeApplication, reconcileDates } from "../dates";
 import { sanitizeRules } from "../finder";
+import { readFlags } from "../verification-flags";
 
 const invalidOutput = () => new AppError("bad_output", "AI 결과에 누락되거나 서로 맞지 않는 정보가 있어요. 다시 분석해 주세요.", 502);
 function unique(values: (string | number)[]) { return new Set(values).size === values.length; }
@@ -83,6 +84,7 @@ const toCheck = (c: Judged, reason: string): Judged => ({ ...c, status: "check",
  * 근거가 부족한 결론은 check로 내린다. 접수 마감과 서류 일정은 서버가 정한다.
  */
 export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unverifiedCriteria: string[] = []): Match {
+  const flags = readFlags(unverifiedCriteria);
   const docIds = new Set(a.documents.map((d) => d.id));
   const judged = new Map<string, Judged>();
   for (const c of match.criteria) {
@@ -101,10 +103,19 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
     if (cited.some((id) => !related.some((q) => q.id === id))) return toCheck(model, "판정 근거로 든 답변이 이 조건과 맞지 않아 확인이 필요해요.");
     const c = { ...model, failed_answer_ids: model.status === "not_met" ? cited : [] };
     const unanswered = !related.length || related.some((q) => !answered(q.id));
+    // 충족은 연결된 질문 중 하나라도 실제로 답했으면 모델 판정을 따른다(이미 답한 조건을 다시 확인하라고 하지 않는다).
+    const noAnswer = !related.some((q) => answered(q.id));
     const text = [e.requirement, e.detail ?? "", ...e.evidence.map((x) => x.quote)].join("\n");
     if (c.status === "check") return c;
-    if (!e.evidence.length || e.evidence.some((x) => x.quote.trim().length < 2) || unverifiedCriteria.includes(e.id)) return toCheck(c, "이 조건의 원문 근거나 표 구조를 자동으로 확인하지 못했어요.");
-    if (c.status === "met") return unanswered ? toCheck(c, NEED_ANSWER) : c;
+    const uncited = !e.evidence.length || e.evidence.some((x) => x.quote.trim().length < 2);
+    if (c.status === "met") {
+      if (noAnswer) return toCheck(c, NEED_ANSWER);
+      // 숫자 기준을 원문에서 확인하지 못했으면(잘못 읽었을 수 있음) 충족으로 단정하지 않는다.
+      if (flags.doubtful.has(e.id) || (uncited && /\d/.test(`${e.requirement} ${e.detail ?? ""}`))) return toCheck(c, "이 조건의 숫자 기준을 원문에서 확인하지 못해 충족으로 단정하지 않았어요. 공고문에서 기준을 확인해 주세요.");
+      return c;
+    }
+    // 원문 문장을 확인하지 못한 조건으로는 '맞지 않는다'고 단정하지 않는다(잘못 읽은 기준 때문에 포기하지 않게).
+    if (uncited || flags.unverified.has(e.id)) return toCheck(c, "이 조건의 원문 문장을 자동으로 확인하지 못해, 맞지 않는다고 단정하지 않았어요.");
     // 탈락은 이 조건에 연결된, 실제로 답한 질문을 근거로 댈 때만 인정한다. 제외 조건에 '해당 없음'이라 답한 것은 근거가 아니다.
     const supports = (id: string) => answered(id) && !(e.kind === "exclusion" && /^해당\s*없음$/.test(answers[id].trim()));
     if (!c.failed_answer_ids.length || !c.failed_answer_ids.every(supports)) return toCheck(c, NEED_ANSWER);
@@ -127,7 +138,9 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
   const unclear = a.application_status === "unknown" && a.schedule.some((s) => s.is_application_deadline && s.date_uncertain);
   // Meeting personal criteria does not reopen an expired (or unconfirmed) application period.
   const heldBack = (expired || unclear) && overall === "likely_eligible";
-  if (heldBack) overall = "needs_check";
+  // 그림 속 글자를 읽지 못한 문서는 조건이 모두 맞아도 다른 조건이 숨어 있을 수 있다.
+  const imagesUnread = flags.unreadImages && overall === "likely_eligible" && !heldBack;
+  if (heldBack || imagesUnread) overall = "needs_check";
   const ids = new Set<string>();
   const checklist = match.checklist.map((t) => {
     let id = t.id;
@@ -161,7 +174,9 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
     ? `공고문에 적힌 접수 마감일이 모두 지났어요. 추가 모집 여부와 새 접수 기간을 먼저 확인해 주세요.${overall === "likely_ineligible" ? " 입력한 조건에도 미충족 항목이 있어요." : ""}`
     : unclear && heldBack
       ? "입력한 정보로는 자격 조건을 충족할 가능성이 있지만, 접수 마감일을 공고문 날짜와 맞춰 확인하지 못했어요. 공고문에서 접수 기간을 직접 확인해 주세요."
-      : messages[overall];
+      : imagesUnread
+        ? "입력한 정보로는 조건에 맞아요. 다만 공고 속 그림의 글자는 읽지 못해서, 그림에 다른 조건이 있는지 원문을 확인해 주세요."
+        : messages[overall];
   // 조건마다 검색 제안은 첫 항목 하나만, 최종 미충족 필수·제외 조건에만 남긴다.
   const searches = new Map<string, Match["next_searches"][number]>();
   for (const s of match.next_searches ?? []) if (!searches.has(s.criterion_id)) searches.set(s.criterion_id, s);

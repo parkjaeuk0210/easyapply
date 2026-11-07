@@ -1,5 +1,6 @@
 // 'AI 맞춤 공고 찾기'의 규칙 비교. AI는 공고에서 조건(rule)을 뽑기만 하고, 사람과 조건의 비교는 여기 코드가 한다.
 // 브라우저와 서버가 같이 쓴다. 프로필(생년월일·소득)은 브라우저 밖으로 보내지 않는다.
+import { readFlags } from "./verification-flags";
 import { EDUCATION, EMPLOYMENT, TOPICS, type Analysis, type Criterion, type Education, type Employment, type Evidence, type Rule, type Topic } from "./schema";
 
 export type Profile = {
@@ -73,13 +74,6 @@ export type CriterionResult = {
 export type Verdict = "eligible" | "check" | "ineligible";
 export type NoticeResult = { verdict: Verdict; headline: string; remaining: string[]; criteria: CriterionResult[]; topicMatches: number; deadline: string | null };
 
-/**
- * 원문 인용을 원문에서 그대로 찾지 못한 조건을 어떻게 다룰지. 한 곳에서만 정한다.
- * "trust_met"(지금): 적어 준 내용으로 분명히 맞으면 맞다고 보여 주고, 안 맞는다는 판단만 '확인 필요'로 낮춘다
- *   (이미 말한 걸 다시 확인하라고 하지 않고, 잘못 읽은 기준 때문에 '불가'로 포기하게 하지도 않는다).
- * "neither": 맞음·안 맞음 모두 '확인 필요'로 둔다.
- */
-export const UNVERIFIED_POLICY: "trust_met" | "neither" = "trust_met";
 
 function ageOn(birth: string, on: string) {
   const [by, bm, bd] = birth.split("-").map(Number), [y, m, d] = on.split("-").map(Number);
@@ -165,7 +159,8 @@ export function inRule(rule: Rule, p: Profile, ctx: { today: string; deadline: s
   }
 }
 
-function judge(c: Criterion, p: Profile, unverified: boolean, ctx: { today: string; deadline: string | null }): Pick<CriterionResult, "status" | "reason"> {
+// 원문 대조 결과를 어떻게 쓰는지는 src/lib/verification-flags.ts에서 정한다.
+function judge(c: Criterion, p: Profile, flags: ReturnType<typeof readFlags>, ctx: { today: string; deadline: string | null }): Pick<CriterionResult, "status" | "reason"> {
   if (!c.rule) return { status: "unknown", reason: "이 조건은 공고를 보고 직접 확인해 주세요." };
   const r = inRule(c.rule, p, ctx);
   if (r.in === null) return { status: "unknown", reason: r.reason };
@@ -175,31 +170,36 @@ function judge(c: Criterion, p: Profile, unverified: boolean, ctx: { today: stri
   if (status === "not_met" && c.rule.has_exception) {
     status = "unknown"; reason = `${reason} 다만 예외 조항이 있어 확인이 필요해요.`;
   }
-  if (unverified && (status === "not_met" || UNVERIFIED_POLICY === "neither")) {
+  if (status === "not_met" && flags.unverified.has(c.id)) {
     status = "unknown"; reason = `${reason} 다만 원문에서 이 문장을 그대로 찾지 못했어요. 공고를 확인해 주세요.`;
+  } else if (status === "met" && flags.doubtful.has(c.id)) {
+    status = "unknown"; reason = "원문에서 이 조건의 숫자 기준을 확인하지 못했어요. 공고문에서 기준을 확인해 주세요.";
   }
   return { status, reason };
 }
 
 /** 공고 하나를 프로필과 비교한다. AI를 부르지 않는다. */
-export function evaluateNotice(a: Analysis, unverifiedCriteria: string[], p: Profile, today: string): NoticeResult {
+export function evaluateNotice(a: Analysis, verificationFlags: string[], p: Profile, today: string): NoticeResult {
   const ctx = { today, deadline: a.application_deadline_iso ?? null };
-  const unverified = new Set(unverifiedCriteria);
+  const flags = readFlags(verificationFlags);
   const criteria: CriterionResult[] = a.eligibility.map((c) => ({
     id: c.id, kind: c.kind, label: c.category, requirement: c.requirement, track: c.applies_to ?? null, evidence: c.evidence,
-    ...judge(c, p, unverified.has(c.id), ctx),
+    ...judge(c, p, flags, ctx),
   }));
   const topicMatches = (a.topics ?? []).filter((t) => p.topics.includes(t)).length;
   const base = { criteria, topicMatches, deadline: a.application_deadline_iso ?? null };
   // 특정 트랙 전용 조건과 우대 조건은 판정에 쓰지 않는다.
   const deciding = criteria.filter((c) => c.kind !== "preference" && !c.track);
-  if (a.application_status === "closed") return { ...base, verdict: "ineligible", headline: "접수가 끝난 공고예요.", remaining: [] };
+  if (a.application_status === "closed") return { ...base, verdict: "ineligible", remaining: [],
+    headline: `접수가 이미 끝난 공고예요${a.application_deadline_iso ? `(${a.application_deadline_iso.replaceAll("-", ".")} 마감)` : ""}.` };
   const failed = deciding.find((c) => c.status === "not_met");
   if (failed) return { ...base, verdict: "ineligible", headline: failed.reason, remaining: [] };
   if (!deciding.length) return { ...base, verdict: "check", headline: "공고에서 자격 조건을 찾지 못했어요. 공고를 직접 확인해 주세요.", remaining: [] };
   // 세금 체납·중복 수혜 같은 제외 조건은 대부분의 사람과 무관하다. '남은 확인'으로 세지 않고 따로 보여 준다.
   const open = deciding.filter((c) => c.kind === "required" && c.status === "unknown");
   const exclusions = deciding.some((c) => c.kind === "exclusion" && c.status === "unknown");
+  if (!open.length && flags.unreadImages) return { ...base, verdict: "check", remaining: ["그림 속 내용"],
+    headline: "적어 주신 내용으로는 필수 조건에 맞아요. 다만 공고 속 그림은 읽지 못해 다른 조건이 있는지 원문을 확인해 주세요." };
   if (!open.length) return { ...base, verdict: "eligible", remaining: [], headline: exclusions
     ? "적어 주신 내용으로는 필수 조건에 모두 맞아요. 아래 제외 대상만 아니면 신청할 수 있어요."
     : "적어 주신 내용으로는 필수 조건에 모두 맞아요." };

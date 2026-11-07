@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { buildIndex, locate, normalize } from '../src/lib/textmatch';
+import { buildFlags } from '../src/lib/verification-flags';
 import { AnalysisSchema, MatchSchema } from '../src/lib/schema';
 import { verifyEvidence } from '../src/lib/server/uploads';
 import { finalizeMatch } from '../src/lib/server/validation';
@@ -56,7 +57,7 @@ function evaluateCitation(raw: string, quote: string) {
   a.schedule = [];
   const verification = verifyEvidence(a, buildIndex([{ page: 1, items: [raw] }], 'extracted'));
   const match = MatchSchema.parse({ overall: 'likely_eligible', overall_message: '', criteria: [{ criterion_id: 'c1', status: 'met', reason: '입력한 조건을 충족해요.', how_to_check: null }], checklist: [] });
-  return { verification, result: finalizeMatch(a, { q1: '예' }, match, verification.unverified_criteria) };
+  return { verification, result: finalizeMatch(a, { q1: '예' }, match, buildFlags(a, verification, false)) };
 }
 
 test('punctuation alone no longer downgrades a verified criterion to check', () => {

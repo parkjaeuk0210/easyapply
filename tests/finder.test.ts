@@ -163,3 +163,17 @@ test('분석 검증이 규칙 대조를 함께 한다', () => {
   validateAnalysis(a);
   assert.equal(a.eligibility[0].rule, null);
 });
+
+test('글자가 있는 원문에서 숫자를 확인하지 못한 조건은 충족으로 단정하지 않고, 그림을 못 읽은 공고는 가능으로 확정하지 않는다', () => {
+  const c = { category: '나이', rule: rule({ type: 'age', max_age: 34, age_basis_date: '2026-11-07' }) };
+  assert.equal(one(c, { birth: '2000-01-01' }, ['c1', 'c1#n']).verdict, 'check');
+  assert.equal(one(c, { birth: '2000-01-01' }, ['c1']).verdict, 'eligible');
+  const pictured = one(c, { birth: '2000-01-01' }, ['#images']);
+  assert.equal(pictured.verdict, 'check');
+  assert.match(pictured.headline, /그림/);
+});
+
+test('접수가 끝난 공고는 마감일과 함께 알린다', () => {
+  const r = evaluateNotice(notice([], { application_status: 'closed', application_deadline_iso: '2026-10-01' }), [], person({}), TODAY);
+  assert.match(r.headline, /접수가 이미 끝난 공고예요\(2026\.10\.01 마감\)/);
+});

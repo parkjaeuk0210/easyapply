@@ -61,7 +61,7 @@ async function analyzeThenMatch(a: Analysis, bytes: Buffer, name: string, mediaT
   const body = await response.json();
   assert.equal(response.status, 200, JSON.stringify(body));
   const parsed = AnalysisSchema.parse(body.analysis);
-  assert.deepEqual(verifyAnalysis(parsed, body.analysis_token, session.id), body.verification.unverified_criteria);
+  assert.deepEqual(verifyAnalysis(parsed, body.analysis_token, session.id), body.verification.flags);
   const judged = await match(new Request(`${origin}/api/match`, { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: JSON.stringify({ analysis: parsed, analysis_token: body.analysis_token, answers: Object.fromEntries(a.profile_questions.map((q) => [q.id, '예'])) }) }));
   const matched = await judged.json();
   assert.equal(judged.status, 200, JSON.stringify(matched));
@@ -112,7 +112,7 @@ function hwpx() {
   return Buffer.concat([...chunks, central, end]);
 }
 
-test('review 5: an image-only income condition holds every HWPX criterion at check through both routes', async (t) => {
+test('review 5: an image the extractor cannot read keeps the whole HWPX notice from "likely eligible", without blanking met criteria', async (t) => {
   const a = analysis();
   a.eligibility = [{ ...a.eligibility[0], requirement: '서울시 거주자', evidence: [{ page: 1, quote: '서울시 거주자여야 합니다.' }] }];
   a.profile_questions = a.profile_questions.slice(0, 1);
@@ -123,9 +123,11 @@ test('review 5: an image-only income condition holds every HWPX criterion at che
   assert.equal(r.body.verification.exact, 1, 'even an exact text quote cannot account for the omitted image');
   assert.doesNotMatch(JSON.stringify(r.body.source.sections), /중위소득 60%/);
   assert.match(r.body.source.warning, /이미지·도형의 글자는 추출하지 않았/);
-  assert.deepEqual(r.body.verification.unverified_criteria, ['c1']);
+  assert.deepEqual(r.body.verification.unverified_criteria, []);
+  assert(r.body.verification.flags.includes('#images'));
   assert.equal(r.match.overall, 'needs_check');
-  assert(r.match.criteria.every((c) => c.status === 'check'));
+  assert.match(r.match.overall_message, /그림/);
+  assert.equal(r.match.criteria[0].status, 'met', 'an exact, answered residence condition is not sent back to the user');
 });
 
 test('review 11: upload route and previously signed tickets enforce the active 22 MiB limit before storage', async (t) => {

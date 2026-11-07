@@ -16,7 +16,7 @@ import { deadlineInfo, Spinner } from "./ui";
 
 export type AnalyzeResponse = {
   analysis: unknown; analysis_token?: string | null;
-  verification?: { unverified_criteria?: string[]; unverified_quotes?: string[] };
+  verification?: { unverified_criteria?: string[]; flags?: string[] };
   source?: { kind: "text"; name: string; sections: { page: number; text: string }[]; warning: string };
   cached?: boolean; analyzed_at?: string;
 };
@@ -87,7 +87,7 @@ export default function Finder({ status, canRunAI, onOpen }: { status: FinderSta
   const ready = items.filter((i) => i.state === "ready");
 
   const ranked = useMemo(() => rankNotices(
-    items.filter((i) => i.state === "done" && i.analysis).map((i) => ({ item: i, result: evaluateNotice(i.analysis!, i.response?.verification?.unverified_quotes ?? i.response?.verification?.unverified_criteria ?? [], profile, today) })),
+    items.filter((i) => i.state === "done" && i.analysis).map((i) => ({ item: i, result: evaluateNotice(i.analysis!, i.response?.verification?.flags ?? i.response?.verification?.unverified_criteria ?? [], profile, today) })),
     today,
   ), [items, profile, today]);
   const pending = items.filter((i) => i.state !== "done");
@@ -210,7 +210,7 @@ const STATUS: Record<RuleStatus, [string, string]> = { met: ["맞아요", "text-
 function NoticeCard({ rank, item, result, onOpen }: { rank: number; item: Item; result: NoticeResult; onOpen: () => void }) {
   const a = item.analysis!;
   const deadline = deadlineInfo(a);
-  const [label, tone] = VERDICT[result.verdict];
+  const [label, tone] = a.application_status === "closed" ? ["접수 마감", "bg-bad-soft text-bad"] : VERDICT[result.verdict];
   const unit = item.file.type === "application/pdf" ? "쪽" : "구역";
   const main = result.criteria.filter((c) => !c.track && (c.kind === "required" || (c.kind === "exclusion" && c.status !== "unknown")));
   // 규칙으로 가리지 못한 제외 조건은 '확인 필요'가 아니라 "이런 경우는 안 돼요" 목록으로 보여 준다.
