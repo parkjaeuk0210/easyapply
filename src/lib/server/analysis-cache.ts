@@ -15,7 +15,7 @@ const CACHEABLE = ["application/pdf", "application/x-hwp", "application/hwp+zip"
 
 export type CachedAnalysis = {
   analysis: Analysis;
-  verification: ReturnType<typeof verifyEvidence> & { flags?: string[] };
+  verification: ReturnType<typeof verifyEvidence> & { flags?: string[]; unsure_schedule?: number[] };
   source?: { kind: string; name: string; sections: { page: number; text: string }[]; warning: string };
   analyzed_at: string;
 };

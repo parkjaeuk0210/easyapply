@@ -15,7 +15,7 @@ import { isLoopbackRequest } from "@/lib/server/http";
 import { readJson } from "@/lib/server/http";
 import { consumeUploads, uploadManifest } from "@/lib/server/staged-uploads";
 import { cacheKey, readCache, writeCache } from "@/lib/server/analysis-cache";
-import { buildFlags } from "@/lib/verification-flags";
+import { buildFlags, numbersFound } from "@/lib/verification-flags";
 
 export const maxDuration = 300;
 export async function POST(req: Request) {
@@ -46,7 +46,7 @@ export async function POST(req: Request) {
     const key = cacheKey(files);
     const hit = key ? await readCache(key) : null;
     if (hit) {
-      settleApplication(hit.analysis, hit.verification.unverified_schedule);
+      settleApplication(hit.analysis, hit.verification.unsure_schedule ?? hit.verification.unverified_schedule);
       const source = hit.source ? { ...hit.source, name: first.name } : undefined;
       console.info(JSON.stringify({ event: "analyze_cache_hit", request_id: requestId, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started }));
       return json({ analysis: hit.analysis, analysis_token: signAnalysis(hit.analysis, sid, hit.verification.flags ?? hit.verification.unverified_criteria), verification: hit.verification, source, provider, cached: true, analyzed_at: hit.analyzed_at, elapsed_ms: Date.now() - started, request_id: requestId }, 200, { "X-Request-Id": requestId });
@@ -69,8 +69,10 @@ export async function POST(req: Request) {
     // 원문 대조는 조건 문장 하나하나로 한다. 표가 섞인 한글 파일이라고 문서 전체를 미확인으로 돌리지 않는다
     // (그러면 이미 답한 조건까지 모두 '확인 필요'가 된다). 표 구조 경고는 원문 보기의 안내 문구로 남는다.
     const checked = verifyEvidence(analysis, index);
-    const verification = { ...checked, flags: buildFlags(analysis, checked, !!extracted?.images) };
-    settleApplication(analysis, verification.unverified_schedule);
+    // 일정 인용이 글자 그대로 안 맞아도 날짜 숫자가 원문 그 쪽에 있으면 마감일을 확정하는 데 쓴다.
+    const unsure_schedule = checked.unverified_schedule.filter((i) => !numbersFound(analysis.schedule[i].evidence, index));
+    const verification = { ...checked, flags: buildFlags(analysis, checked, !!extracted?.images, index), unsure_schedule };
+    settleApplication(analysis, verification.unsure_schedule);
     const source = extracted ? { kind: "text", name: first.name, sections: extracted.sections, warning: extracted.warning } : undefined;
     if (key) await writeCache(key, { analysis, verification, source, analyzed_at: new Date().toISOString() });
     console.info(JSON.stringify({ event: "analyze_complete", request_id: requestId, provider: used, elapsed_ms: Date.now() - started, verification: { ...verification, page_corrections_count: verification.page_corrections.length, page_corrections: verification.page_corrections.map(({ page, found_page }) => ({ page, found_page })) } }));
