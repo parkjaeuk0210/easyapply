@@ -257,7 +257,7 @@ const OVERALL = {
   needs_check: "확인이 더 필요해요",
   likely_ineligible: "이 공고는 신청 대상이 아닐 가능성이 커요",
 };
-const DISCLAIMER = "최종 자격은 기관 심사로 정해져요.";
+const DISCLAIMER = "AI가 정리한 내용이라 틀릴 수 있어요. 최종 자격은 기관 심사로 정해져요.";
 
 type Result = Match["criteria"][number];
 

@@ -269,6 +269,7 @@ export default function EasyApp() {
   // 사진·스캔본은 AI가 글자를 읽은 것이라 틀릴 수 있다.
   const readFromImage = source?.kind === "images" ? "사진에서 읽은 내용이라 틀린 글자가 있을 수 있어요."
     : index?.source === "pdf" && !index.hasText ? "스캔한 문서에서 읽은 내용이라 틀린 글자가 있을 수 있어요." : null;
+  const resultNote = [readFromImage, "AI가 정리한 내용이라 틀릴 수 있어요. 신청 전에 원문을 꼭 확인해 주세요."].filter(Boolean).join(" ");
 
   const docKey = useMemo(() => {
     if (!analysis) return "";
@@ -302,7 +303,7 @@ export default function EasyApp() {
 
             {stage === "result" && analysis && (
               <EvidenceContext.Provider value={evCtx}>
-                <ResultHeader a={analysis} note={readFromImage} matched={!!match} onCheck={tab !== "mine" ? () => goTab("mine") : undefined} />
+                <ResultHeader a={analysis} note={resultNote} matched={!!match} onCheck={tab !== "mine" ? () => goTab("mine") : undefined} />
                 <div ref={topRef} className="scroll-mt-16" />
                 <Tabs tab={tab} onTab={goTab} match={match} matching={matching} />
                 <div id="tab-panel" role="tabpanel" aria-labelledby={`tab-${tab}`} className="mt-4">
@@ -481,7 +482,7 @@ function UploadScreen({
               }}
             />
           </div>
-          <p className="mt-2 text-[14px] leading-relaxed text-ink-2">올린 파일과 적은 내용은 분석에만 쓰고 따로 저장하지 않아요.</p>
+          <p className="mt-2 text-[14px] leading-relaxed text-ink-2">올린 파일과 적은 내용은 분석에만 쓰고 이 서비스에 저장하지 않아요. 분석은 미국 Anthropic의 AI가 하고, 그쪽에서도 30일 안에 지워져요.</p>
 
           {error && <div role="alert" className="mt-4 rounded-xl bg-bad-soft px-4 py-3 text-[16px] leading-relaxed text-bad">{error}</div>}
           {onRetryUpload && (

@@ -59,7 +59,7 @@ test('feedback keeps a definite 120% income failure separate from an unknown con
   assert.equal(text.match(/미충족/g)?.length, 1);
   assert.equal(text.match(/확인 필요/g)?.length, 1);
   assert.match(text, /우대 대상 아님/);
-  assert.match(text, /최종 자격은 기관 심사로 정해져요/);
+  assert.match(text, /AI가 정리한 내용이라 틀릴 수 있어요\. 최종 자격은 기관 심사로 정해져요/);
   assert(text.indexOf('기준 중위소득 100% 이하') < text.indexOf('지역 5년 이상 거주자 우대'));
   assert(text.indexOf('무주택자') < text.indexOf('지역 5년 이상 거주자 우대'));
   assert.match(text, /중위소득 120% 청년 주거 지원/);
