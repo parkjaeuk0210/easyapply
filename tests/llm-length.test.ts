@@ -80,11 +80,11 @@ async function withProvider(provider: Provider, reply: Reply, check: (bodies: Re
 }
 
 for (const provider of ['api'] as const) {
-  test(`${provider}: analysis streams with 32000 output tokens and match with 16000`, async () => {
-    assert.equal(ANALYSIS_OUTPUT_TOKENS, 32_000);
+  test(`${provider}: analysis streams with 48000 output tokens and match with 16000`, async () => {
+    assert.equal(ANALYSIS_OUTPUT_TOKENS, 48_000);
     assert.equal(MATCH_OUTPUT_TOKENS, 16_000);
     await withProvider(provider, {}, async (bodies) => {
-      for (const [maxTokens, expected] of [[undefined, 32_000], [matchOutputTokens(), 16_000]] as const) {
+      for (const [maxTokens, expected] of [[undefined, 48_000], [matchOutputTokens(), 16_000]] as const) {
         const requestsBefore = bodies.length;
         const result = await runStructured({ ...options, maxTokens });
         assert.deepEqual(result.data, { result: 'ok' });
@@ -124,7 +124,7 @@ for (const provider of ['api'] as const) {
         const usage = logs.map((line) => JSON.parse(line)).find((event) => event.event === 'ai_usage');
         assert.equal(usage?.stop_reason, 'max_tokens');
         assert.equal(usage?.output_tokens, 128_000);
-        assert.equal(usage?.max_output_tokens, 32_000);
+        assert.equal(usage?.max_output_tokens, 48_000);
       });
     });
   }

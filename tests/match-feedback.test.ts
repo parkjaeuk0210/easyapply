@@ -44,9 +44,11 @@ test('an explicit disqualifying answer survives another missing related answer',
   assert.deepEqual(result.next_searches, match.next_searches);
 });
 
-test('an unverified source always overrides failure provenance and its search advice', () => {
+test('an unverified number always overrides failure provenance and its search advice', () => {
   const { analysis, match, answers } = fixture();
-  const result = finalizeMatch(analysis, answers, match, ['c1']);
+  // A quote that merely differs in layout ('c1' alone) keeps the failure; an unmatched number ('#n') does not.
+  assert.equal(finalizeMatch(analysis, answers, match, ['c1']).criteria[0].status, 'not_met');
+  const result = finalizeMatch(analysis, answers, match, ['c1', 'c1#n']);
   assert.equal(result.criteria[0].status, 'check');
   assert.deepEqual(result.criteria[0].failed_answer_ids, []);
   assert.equal(result.overall, 'needs_check');

@@ -65,7 +65,8 @@ export function medianIncome(size: number) {
   return MEDIAN_2026[5] + (MEDIAN_2026[5] - MEDIAN_2026[4]) * (size - 6);
 }
 
-type InRange = { in: boolean | null; reason: string };
+// far: 기준과 차이가 커서 예외 조항(병역 기간 연장 등)으로도 맞출 수 없는 경우.
+type InRange = { in: boolean | null; reason: string; far?: boolean };
 export type Status = "met" | "not_met" | "unknown";
 export type CriterionResult = {
   id: string; kind: Criterion["kind"]; label: string; requirement: string; track: string | null;
@@ -93,13 +94,16 @@ export function inRule(rule: Rule, p: Profile, ctx: { today: string; deadline: s
       const dates = rule.age_basis_date ? [rule.age_basis_date] : [ctx.today, ...(ctx.deadline && ctx.deadline > ctx.today ? [ctx.deadline] : [])];
       const ages = dates.map((d) => ageOn(p.birth!, d));
       if (ages.some((a) => fits(a)) !== ages.every((a) => fits(a))) return { in: null, reason: `나이 기준일에 따라 ${range(rule.min_age, rule.max_age)} 조건이 달라질 수 있어요. 기준일을 확인해 주세요.` };
-      return { in: fits(ages[0]), reason: `만 ${ages[0]}세라 ${range(rule.min_age, rule.max_age)} 조건에 ${fits(ages[0]) ? "맞아요" : "맞지 않아요"}.` };
+      const far = (rule.max_age != null && ages[0] > rule.max_age + 5) || (rule.min_age != null && ages[0] < rule.min_age - 5);
+      return { in: fits(ages[0]), far, reason: `만 ${ages[0]}세라 ${range(rule.min_age, rule.max_age)} 조건에 ${fits(ages[0]) ? "맞아요" : "맞지 않아요"}.` };
     }
     case "birth_date": {
       if (!rule.born_from && !rule.born_to) return { in: null, reason: "출생일 조건을 공고에서 확인해 주세요." };
       if (!p.birth) return { in: null, reason: "생년월일을 적으면 확인할 수 있어요." };
       const fits = (!rule.born_from || p.birth >= rule.born_from) && (!rule.born_to || p.birth <= rule.born_to);
-      return { in: fits, reason: `${[rule.born_from, rule.born_to].map((d) => d ? d.replaceAll("-", ".") : "").join("~")} 출생 조건에 ${fits ? "맞아요" : "맞지 않아요"}.` };
+      const years = (a: string, b: string) => Math.abs(Number(a.slice(0, 4)) - Number(b.slice(0, 4)));
+      const far = (!!rule.born_from && p.birth < rule.born_from && years(p.birth, rule.born_from) > 5) || (!!rule.born_to && p.birth > rule.born_to && years(p.birth, rule.born_to) > 5);
+      return { in: fits, far, reason: `${[rule.born_from, rule.born_to].map((d) => d ? d.replaceAll("-", ".") : "").join("~")} 출생 조건에 ${fits ? "맞아요" : "맞지 않아요"}.` };
     }
     case "region": {
       const regions = (rule.regions ?? []).map(parseRegion).filter((r) => r.sido || r.local);
@@ -167,12 +171,14 @@ function judge(c: Criterion, p: Profile, flags: ReturnType<typeof readFlags>, ct
   // exclusion은 "이 범위에 들면 신청 불가"다.
   let status: Status = (c.kind === "exclusion" ? !r.in : r.in) ? "met" : "not_met";
   let reason = c.kind === "exclusion" ? (r.in ? `제외 대상이에요: ${c.requirement}` : "제외 대상에 해당하지 않아요.") : r.reason;
-  if (status === "not_met" && c.rule.has_exception) {
+  if (status === "not_met" && c.rule.has_exception && !r.far) {
     status = "unknown"; reason = `${reason} 다만 예외 조항이 있어 확인이 필요해요.`;
+  } else if (status === "not_met" && c.rule.has_exception) {
+    reason = `${reason} 예외 조항을 감안해도 기준과 차이가 커요.`;
   }
-  if (status === "not_met" && flags.unverified.has(c.id)) {
-    status = "unknown"; reason = `${reason} 다만 원문에서 이 문장을 그대로 찾지 못했어요. 공고를 확인해 주세요.`;
-  } else if (status === "met" && flags.doubtful.has(c.id)) {
+  if (status === "not_met" && flags.doubtNotMet.has(c.id)) {
+    status = "unknown"; reason = `${reason} 다만 원문에서 숫자 기준을 확인하지 못했어요. 공고를 확인해 주세요.`;
+  } else if (status === "met" && flags.doubtMet.has(c.id)) {
     status = "unknown"; reason = "원문에서 이 조건의 숫자 기준을 확인하지 못했어요. 공고문에서 기준을 확인해 주세요.";
   }
   return { status, reason };
@@ -194,7 +200,9 @@ export function evaluateNotice(a: Analysis, verificationFlags: string[], p: Prof
     headline: `접수가 이미 끝난 공고예요${a.application_deadline_iso ? `(${a.application_deadline_iso.replaceAll("-", ".")} 마감)` : ""}.` };
   const failed = deciding.find((c) => c.status === "not_met");
   if (failed) return { ...base, verdict: "ineligible", headline: failed.reason, remaining: [] };
-  if (!deciding.length) return { ...base, verdict: "check", headline: "공고에서 자격 조건을 찾지 못했어요. 공고를 직접 확인해 주세요.", remaining: [] };
+  if (!deciding.length) return { ...base, verdict: "check", remaining: [], headline: criteria.some((c) => c.track)
+    ? "신청 유형마다 조건이 달라요. '조건별로 보기'에서 내 유형의 조건을 확인해 주세요."
+    : "공고에서 자격 조건을 찾지 못했어요. 공고를 직접 확인해 주세요." };
   // 세금 체납·중복 수혜 같은 제외 조건은 대부분의 사람과 무관하다. '남은 확인'으로 세지 않고 따로 보여 준다.
   const open = deciding.filter((c) => c.kind === "required" && c.status === "unknown");
   const exclusions = deciding.some((c) => c.kind === "exclusion" && c.status === "unknown");

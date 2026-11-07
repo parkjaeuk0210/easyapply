@@ -55,7 +55,7 @@ export function configurationIssues(): string[] {
       if (!/^https?:$/.test(u.protocol) || u.origin !== process.env.EASYAPPLY_APP_ORIGIN) issues.push("app_origin");
     }
     intEnv("EASYAPPLY_REQUEST_TIMEOUT_MS", 240_000, 1000, 260_000);
-    intEnv("EASYAPPLY_ANALYZE_OUTPUT_TOKENS", 32_000, 1000, 128_000);
+    intEnv("EASYAPPLY_ANALYZE_OUTPUT_TOKENS", 48_000, 1000, 128_000);
     intEnv("EASYAPPLY_MATCH_OUTPUT_TOKENS", 16_000, 1000, 128_000);
     if (usageLimitsEnabled()) {
       intEnv("EASYAPPLY_DAILY_AI_LIMIT", 100, 1, 100_000);

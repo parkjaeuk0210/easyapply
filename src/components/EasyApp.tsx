@@ -54,6 +54,9 @@ export default function EasyApp() {
   const [menu, setMenu] = useState<"analyze" | "finder">("analyze");
   // 맞춤 공고 찾기에서 연 상세 화면이면, 머리글 버튼이 추천 목록으로 돌아간다.
   const [fromFinder, setFromFinder] = useState(false);
+  // 맞춤 찾기에서 연 공고마다 상세 화면에서 한 답과 판정을 기억해, 목록에 돌아갔다 다시 열어도 그대로 둔다.
+  const [checked, setChecked] = useState<Record<string, { answers: Answers; extra: string; match: Match | null }>>({});
+  const openedKey = useRef<string | null>(null);
 
   useEffect(() => () => {
     controller.current?.abort();
@@ -112,6 +115,13 @@ export default function EasyApp() {
   };
 
   // 맞춤 공고 찾기에서 이미 받은 분석으로 상세 화면을 연다(다시 호출하지 않는다).
+  const backToList = () => {
+    const key = openedKey.current;
+    if (key) setChecked((all) => ({ ...all, [key]: { answers, extra, match } }));
+    openedKey.current = null;
+    reset();
+  };
+
   const openFound = (file: File, j: AnalyzeResponse, profile: Profile) => {
     operation.current++;
     controller.current?.abort();
@@ -123,7 +133,14 @@ export default function EasyApp() {
     for (const q of found.profile_questions) {
       if (q.input === "date" && profile.birth && /생년월일|출생|태어/.test(q.label)) prefilled[q.id] = profile.birth;
       if (q.input === "text" && place && /거주|주소|사는 곳|주민등록|지역/.test(q.label)) prefilled[q.id] = place;
+      if (q.input === "select" && profile.education && /학교|재학|학적|다니/.test(q.label)) {
+        const hits = q.options.filter((o) => SCHOOL_OPTION[profile.education!].test(o));
+        if (hits.length === 1) prefilled[q.id] = hits[0];
+      }
     }
+    const key = finderKey(file);
+    const saved = checked[key];
+    openedKey.current = key;
     filesRef.current = [file];
     setError(null);
     setSource(src);
@@ -131,10 +148,10 @@ export default function EasyApp() {
     setAnalysisToken(j.analysis_token ?? null);
     setIndex(null);
     setActive(null);
-    setMatch(null);
-    setAnswers(prefilled);
-    setExtra("");
-    setTab("overview");
+    setMatch(saved?.match ?? null);
+    setAnswers(saved?.answers ?? prefilled);
+    setExtra(saved?.extra ?? "");
+    setTab(saved?.match ? "mine" : "overview");
     setStage("result");
     setFromFinder(true);
     window.scrollTo(0, 0);
@@ -216,6 +233,9 @@ export default function EasyApp() {
 
   async function onFiles(list: FileList | File[]) {
     const current = ++operation.current;
+    // 새 탭을 열자마자 고르면 연결 상태를 아직 못 받았을 수 있다. 그때는 받아 온 뒤 판단한다.
+    const ready = status ?? await fetch("/api/status", { cache: "no-store" }).then(responseJson).then((s) => { setStatus(s); return s as Status; }).catch(() => null);
+    const canRun = !!ready && ready.provider !== "none" && !ready.access_required;
     let files = Array.from(list).map((f) => new File([f], f.name, { type: fileMediaType(f.name, f.type) }));
     if (!files.length) return;
     const bad = files.find((f) => !ACCEPT.includes(f.type));
@@ -236,11 +256,11 @@ export default function EasyApp() {
       setError("사진은 10장까지 올릴 수 있어요.");
       return;
     }
-    if (!canRunAI) {
-      setError(status?.access_required ? "이용 코드를 먼저 입력해 주세요." : "지금은 분석을 할 수 없어요. 잠시 후 다시 시도해 주세요.");
+    if (!canRun) {
+      setError(ready?.access_required ? "이용 코드를 먼저 입력해 주세요." : "지금은 분석을 할 수 없어요. 잠시 후 다시 시도해 주세요.");
       return;
     }
-    const limit = status?.max_upload_bytes ?? MAX_UPLOAD_BYTES;
+    const limit = ready?.max_upload_bytes ?? MAX_UPLOAD_BYTES;
     if (pdfs.length && pdfs[0].size > limit) {
       setError("파일이 너무 커요. 필요한 쪽만 따로 저장하거나 화면을 캡처해서 올려 주세요.");
       return;
@@ -320,7 +340,7 @@ export default function EasyApp() {
   return (
     <div className="min-h-screen">
       <Header
-        onHome={stage !== "upload" ? reset : undefined}
+        onHome={stage !== "upload" ? (fromFinder ? backToList : reset) : undefined}
         homeLabel={fromFinder ? "추천 목록으로" : "새 공고문"}
         onSource={stage !== "upload" && source ? () => setSheetOpen(true) : undefined}
       />
@@ -328,7 +348,7 @@ export default function EasyApp() {
       {stage === "upload" && <MenuBar menu={menu} onMenu={(m) => { setError(null); setMenu(m); }} />}
       {/* 목록 상태를 지키려고 상세 화면을 보는 동안에도 맞춤 찾기를 숨겨 둔 채 유지한다. */}
       <div hidden={!(stage === "upload" && menu === "finder")} className="mx-auto max-w-[1180px] px-4 pb-16 pt-6 sm:px-6">
-        <Finder status={status} canRunAI={canRunAI} onOpen={openFound} />
+        <Finder status={status} canRunAI={canRunAI} onOpen={openFound} detailOf={(file) => checked[finderKey(file)]?.match ?? null} />
       </div>
 
       {stage === "upload" && menu === "analyze" && (
@@ -398,6 +418,13 @@ export default function EasyApp() {
     </div>
   );
 }
+
+// 맞춤 찾기에서 고른 학력과 상세 질문의 선택지를 잇는다(하나만 맞을 때만 채운다).
+const SCHOOL_OPTION: Record<NonNullable<Profile["education"]>, RegExp> = {
+  middle_or_less: /중학교/, hs_student: /고등학교.*재학|고교.*재학/, hs_grad: /고등학교.*졸업|고졸/,
+  college_student: /^(?!.*(휴학|대학원|고등|졸업)).*재학/, college_leave: /휴학/, college_grad: /대학.*졸업|대졸/, grad_school: /대학원/,
+};
+const finderKey = (file: File) => `${file.name}|${file.size}|${file.lastModified}`;
 
 // ── 머리글 ──────────────────────────────────────────────────────
 

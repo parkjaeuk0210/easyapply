@@ -90,12 +90,27 @@ test('중위소득 비율: 기준 안이면 충족, 10% 안쪽으로 넘으면 �
   assert.equal(one(c, { householdSize: 1, monthlyIncome: null }).verdict, 'check');
 });
 
-test('원문 문장을 그대로 찾지 못한 조건: 분명히 맞으면 맞다고 하고, 안 맞는 판단만 확인 필요로 낮춘다', () => {
-  const c = { category: '나이', rule: rule({ type: 'age', min_age: 18, age_basis_date: '2026-10-28' }) };
-  assert.equal(one(c, { birth: '1998-06-01' }, ['c1']).verdict, 'eligible');
-  const young = one(c, { birth: '2010-01-01' }, ['c1']);
+test('원문 인용이 글자 그대로 안 맞아도 숫자가 없는 조건은 답한 대로, 스캔본의 숫자 조건은 충족만 쓴다', () => {
+  const region = { category: '거주지', rule: rule({ type: 'region', regions: ['통영시'] }) };
+  assert.equal(one(region, { sido: 'gyeongnam', sigungu: '거창군' }, ['c1']).verdict, 'ineligible');
+  const age = { category: '나이', rule: rule({ type: 'age', min_age: 18, age_basis_date: '2026-10-28' }) };
+  assert.equal(one(age, { birth: '1998-06-01' }, ['c1', 'c1#s']).verdict, 'eligible');
+  const young = one(age, { birth: '2010-01-01' }, ['c1', 'c1#s']);
   assert.equal(young.verdict, 'check');
-  assert.match(young.criteria[0].reason, /찾지 못했어요/);
+  assert.match(young.criteria[0].reason, /숫자 기준을 확인하지 못했어요/);
+});
+
+test('예외 조항이 있어도 기준과 5년 넘게 차이 나면 불가', () => {
+  const c = { category: '나이', rule: rule({ type: 'age', max_age: 39, age_basis_date: '2026-11-07', has_exception: true }) };
+  const old = one(c, { birth: '1960-04-05' });
+  assert.equal(old.verdict, 'ineligible');
+  assert.match(old.headline, /예외 조항을 감안해도/);
+  assert.equal(one(c, { birth: '1985-01-01' }).verdict, 'check');
+});
+
+test('조건이 모두 특정 신청 유형용이면 "찾지 못했어요" 대신 유형별 확인을 안내한다', () => {
+  const r = evaluateNotice(notice([{ category: '평점', applies_to: '성적 장학 유형', rule: null }]), [], person({}), TODAY);
+  assert.match(r.headline, /신청 유형마다/);
 });
 
 test('규칙이 없는 제외 조건(세금 체납 등)은 남은 확인으로 세지 않는다', () => {
