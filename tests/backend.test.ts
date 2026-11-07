@@ -53,7 +53,7 @@ test('blank answers never become met; an unmatched quote blocks met only when it
   assert.equal(finalizeMatch(a, demo.answers, m, [id]).criteria[0].status, 'met');
   assert.equal(finalizeMatch(a, demo.answers, m, [id, `${id}#n`]).criteria[0].status, 'check');
   m.criteria[0].status = 'not_met'; m.criteria[0].failed_answer_ids = a.profile_questions.filter(q => q.criteria_ids.includes(id)).map(q => q.id).slice(0, 1);
-  assert.equal(finalizeMatch(a, demo.answers, m, [id, `${id}#s`]).criteria[0].status, 'check', 'a scanned number never makes a failure final');
+  assert.equal(finalizeMatch(a, demo.answers, m, [id, `${id}#n`]).criteria[0].status, 'check', 'an unchecked number never makes a failure final');
 });
 test('preference failure does not disqualify; a missing model criterion becomes check instead of a 502', () => {
   const a = analysis(), m = match();

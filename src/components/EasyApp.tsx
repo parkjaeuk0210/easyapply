@@ -54,7 +54,7 @@ export default function EasyApp() {
   const [menu, setMenu] = useState<"analyze" | "finder">("analyze");
   // 맞춤 공고 찾기에서 연 상세 화면이면, 머리글 버튼이 추천 목록으로 돌아간다.
   const [fromFinder, setFromFinder] = useState(false);
-  // 맞춤 찾기에서 연 공고마다 상세 화면에서 한 답과 판정을 기억해, 목록에 돌아갔다 다시 열어도 그대로 둔다.
+  // 맞춤 찾기에서 연 공고마다 상세 화면에서 한 답과 판정을 기억해, 다시 열어도 그대로 둔다(목록 카드에는 섞지 않는다).
   const [checked, setChecked] = useState<Record<string, { answers: Answers; extra: string; match: Match | null }>>({});
   const openedKey = useRef<string | null>(null);
 
@@ -133,10 +133,6 @@ export default function EasyApp() {
     for (const q of found.profile_questions) {
       if (q.input === "date" && profile.birth && /생년월일|출생|태어/.test(q.label)) prefilled[q.id] = profile.birth;
       if (q.input === "text" && place && /거주|주소|사는 곳|주민등록|지역/.test(q.label)) prefilled[q.id] = place;
-      if (q.input === "select" && profile.education && /학교|재학|학적|다니/.test(q.label)) {
-        const hits = q.options.filter((o) => SCHOOL_OPTION[profile.education!].test(o));
-        if (hits.length === 1) prefilled[q.id] = hits[0];
-      }
     }
     const key = finderKey(file);
     const saved = checked[key];
@@ -348,7 +344,7 @@ export default function EasyApp() {
       {stage === "upload" && <MenuBar menu={menu} onMenu={(m) => { setError(null); setMenu(m); }} />}
       {/* 목록 상태를 지키려고 상세 화면을 보는 동안에도 맞춤 찾기를 숨겨 둔 채 유지한다. */}
       <div hidden={!(stage === "upload" && menu === "finder")} className="mx-auto max-w-[1180px] px-4 pb-16 pt-6 sm:px-6">
-        <Finder status={status} canRunAI={canRunAI} onOpen={openFound} detailOf={(file) => checked[finderKey(file)]?.match ?? null} />
+        <Finder status={status} canRunAI={canRunAI} onOpen={openFound} />
       </div>
 
       {stage === "upload" && menu === "analyze" && (
@@ -419,11 +415,6 @@ export default function EasyApp() {
   );
 }
 
-// 맞춤 찾기에서 고른 학력과 상세 질문의 선택지를 잇는다(하나만 맞을 때만 채운다).
-const SCHOOL_OPTION: Record<NonNullable<Profile["education"]>, RegExp> = {
-  middle_or_less: /중학교/, hs_student: /고등학교.*재학|고교.*재학/, hs_grad: /고등학교.*졸업|고졸/,
-  college_student: /^(?!.*(휴학|대학원|고등|졸업)).*재학/, college_leave: /휴학/, college_grad: /대학.*졸업|대졸/, grad_school: /대학원/,
-};
 const finderKey = (file: File) => `${file.name}|${file.size}|${file.lastModified}`;
 
 // ── 머리글 ──────────────────────────────────────────────────────

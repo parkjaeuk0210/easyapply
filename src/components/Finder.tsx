@@ -2,7 +2,7 @@
 
 // 'AI 맞춤 공고 찾기': 내 상황 → 공고 최대 5개 → 추천 순서. 비교는 src/lib/finder.ts의 규칙 코드가 이 기기에서 한다.
 import { useMemo, useRef, useState } from "react";
-import { AnalysisSchema, type Analysis, type Match } from "@/lib/schema";
+import { AnalysisSchema, type Analysis } from "@/lib/schema";
 import { errorMessage, responseJson } from "@/lib/client-api";
 import { cleanupUpload, uploadLargeFiles } from "@/lib/client-upload";
 import { fileMediaType } from "@/lib/filetypes";
@@ -49,11 +49,9 @@ function ago(iso?: string) {
   return hours < 1 ? "1시간 안에" : hours < 24 ? `${hours}시간 전` : `${Math.round(hours / 24)}일 전`;
 }
 
-export default function Finder({ status, canRunAI, onOpen, detailOf }: {
+export default function Finder({ status, canRunAI, onOpen }: {
   status: FinderStatus | null; canRunAI: boolean;
   onOpen: (file: File, response: AnalyzeResponse, profile: Profile) => void;
-  /** 상세 화면에서 질문에 답해 받은 판정. 있으면 카드가 그 결과를 따른다. */
-  detailOf: (file: File) => Match | null;
 }) {
   const [step, setStep] = useState<"profile" | "notices">("profile");
   const [profile, setProfile] = useState<Profile>(EMPTY_PROFILE);
@@ -92,9 +90,9 @@ export default function Finder({ status, canRunAI, onOpen, detailOf }: {
   const ready = items.filter((i) => i.state === "ready");
 
   const ranked = useMemo(() => rankNotices(
-    items.filter((i) => i.state === "done" && i.analysis).map((i) => ({ item: i, result: withDetail(detailOf(i.file), evaluateNotice(i.analysis!, i.response?.verification?.flags ?? i.response?.verification?.unverified_criteria ?? [], profile, today)) })),
+    items.filter((i) => i.state === "done" && i.analysis).map((i) => ({ item: i, result: evaluateNotice(i.analysis!, i.response?.verification?.flags ?? i.response?.verification?.unverified_criteria ?? [], profile, today) })),
     today,
-  ), [items, profile, today, detailOf]);
+  ), [items, profile, today]);
   const pending = items.filter((i) => i.state !== "done");
 
   if (step === "profile") return (
@@ -207,13 +205,6 @@ export default function Finder({ status, canRunAI, onOpen, detailOf }: {
   );
 }
 
-// 상세 화면에서 질문에 답해 받은 판정이 있으면, 더 많은 정보로 낸 결과이므로 카드도 그 결과를 따른다.
-function withDetail(detail: Match | null, result: NoticeResult): NoticeResult {
-  if (!detail) return result;
-  const verdict: Verdict = detail.overall === "likely_eligible" ? "eligible" : detail.overall === "likely_ineligible" ? "ineligible" : "check";
-  return { ...result, verdict, remaining: verdict === "check" ? ["자세히 확인"] : [], headline: `자세히 확인한 결과: ${detail.overall_message}` };
-}
-
 const VERDICT: Record<Verdict, [string, string]> = {
   eligible: ["지원 가능", "bg-ok-soft text-ok"], check: ["추가 확인 필요", "bg-warn-soft text-warn"], ineligible: ["지원 불가", "bg-bad-soft text-bad"],
 };
@@ -224,7 +215,9 @@ function NoticeCard({ rank, item, result, onOpen }: { rank: number; item: Item; 
   const deadline = deadlineInfo(a);
   const [label, tone] = a.application_status === "closed" ? ["접수 마감", "bg-bad-soft text-bad"] : VERDICT[result.verdict];
   const unit = item.file.type === "application/pdf" ? "쪽" : "구역";
-  const main = result.criteria.filter((c) => !c.track && (c.kind === "required" || (c.kind === "exclusion" && c.status !== "unknown")));
+  // 결론을 바꾸는 필수 조건을 먼저, 해당하지 않는 제외 조건은 아래에 회색으로.
+  const main = result.criteria.filter((c) => !c.track && (c.kind === "required" || (c.kind === "exclusion" && c.status !== "unknown")))
+    .sort((x, y) => Number(x.kind === "exclusion") - Number(y.kind === "exclusion"));
   // 규칙으로 가리지 못한 제외 조건은 '확인 필요'가 아니라 "이런 경우는 안 돼요" 목록으로 보여 준다.
   const excluded = result.criteria.filter((c) => !c.track && c.kind === "exclusion" && c.status === "unknown");
   const tracks = result.criteria.filter((c) => c.track);
@@ -259,7 +252,7 @@ function NoticeCard({ rank, item, result, onOpen }: { rank: number; item: Item; 
 }
 
 function CriterionRow({ c, unit }: { c: NoticeResult["criteria"][number]; unit: string }) {
-  const [label, tone] = STATUS[c.status];
+  const [label, tone] = c.kind === "exclusion" && c.status === "met" ? ["해당 없음", "text-ink-2"] : STATUS[c.status];
   const quote = c.evidence.find((e) => e.quote.trim());
   return (
     <li className="rounded-xl bg-surface-2 px-3.5 py-2.5">

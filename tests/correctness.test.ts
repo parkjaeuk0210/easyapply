@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { crc32 } from 'node:zlib';
 import { AnalysisSchema, MatchSchema, type Analysis } from '../src/lib/schema';
+import { buildFlags } from '../src/lib/verification-flags';
 import { validateAnalysis, validateAnswers, finalizeMatch, settleApplication } from '../src/lib/server/validation';
 import { verifyEvidence } from '../src/lib/server/uploads';
 import { extractHangul } from '../src/lib/server/hangul';
@@ -492,11 +493,12 @@ test('review 4: only identical criterion duplicates merge; differing status or e
 });
 
 
-test('review 2: missing citations cannot become met even without a supplied verification list', () => {
+test('review 2: a numeric condition without a citation cannot become met (its numbers are unchecked)', () => {
   for (const evidence of [[], [ev('')], [ev('   ')]]) {
     const a = base(); a.eligibility[0].evidence = evidence;
     validateAnalysis(a, 1);
-    const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }));
+    // The analyze route marks a blank citation unverified; its numbers then cannot be found in the source.
+    const r = finalizeMatch(a, { q1: '25' }, model({ c1: 'met' }), buildFlags(a, { unverified_criteria: ['c1'] }, false, null));
     assert.equal(r.criteria[0].status, 'check');
     assert.equal(r.overall, 'needs_check');
   }

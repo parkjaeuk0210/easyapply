@@ -264,9 +264,8 @@ type Result = Match["criteria"][number];
 /** 조건 종류에 맞춰 결과를 낱말 하나로 */
 function verdictWord(c: Criterion | undefined, r: Result) {
   if (r.status === "check") return STATUS.check;
-  if (r.status === "met" && r.not_applicable) return { label: "해당 없음", className: "text-ink-2" };
   if (c?.kind === "preference") return r.status === "met" ? { label: "우대 대상", className: "text-ok" } : { label: "우대 대상 아님", className: "text-ink-2" };
-  if (c?.kind === "exclusion") return r.status === "met" ? { label: "해당 없음", className: "text-ok" } : { label: "제외 대상", className: "text-bad" };
+  if (c?.kind === "exclusion") return r.status === "met" ? { label: "해당 없음", className: "text-ink-2" } : { label: "제외 대상", className: "text-bad" };
   return STATUS[r.status];
 }
 
@@ -320,7 +319,9 @@ function MatchResult({ a, match, answers, extra, docKey, fresh, onShown, onEdit 
   const crit = new Map(a.eligibility.map((c) => [c.id, c]));
   const docs = new Map(a.documents.map((d) => [d.id, d]));
   const order = { not_met: 0, check: 1, met: 2 };
-  const sorted = [...match.criteria].sort((x, y) => order[x.status] - order[y.status]);
+  // 나와 관계없는 조건(다른 계층 전용)은 숨기고, 해당하지 않는 제외 조건은 충족한 필수 조건 아래로 보낸다.
+  const rank = (r: Result) => order[r.status] * 2 + Number(r.status === "met" && crit.get(r.criterion_id)?.kind === "exclusion");
+  const sorted = match.criteria.filter((r) => !(r.status === "met" && r.not_applicable)).sort((x, y) => rank(x) - rank(y));
   const main = sorted.filter((r) => crit.get(r.criterion_id)?.kind !== "preference");
   const preferences = sorted.filter((r) => crit.get(r.criterion_id)?.kind === "preference");
   const failed = main.filter((r) => r.status === "not_met");

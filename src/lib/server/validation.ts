@@ -112,11 +112,11 @@ export function finalizeMatch(a: Analysis, answers: Answers, match: Match, unver
       // '더 알려 줄 상황'에 적은 내용으로 모델이 충족을 판단했으면 따른다(같은 내용을 다시 묻지 않는다).
       if (noAnswer && !hasExtra) return toCheck(c, NEED_ANSWER);
       // 숫자 기준을 원문에서 확인하지 못했으면(잘못 읽었을 수 있음) 충족으로 단정하지 않는다.
-      if (flags.doubtMet.has(e.id) || (uncited && /\d/.test(`${e.requirement} ${e.detail ?? ""}`))) return toCheck(c, "이 조건의 숫자 기준을 원문에서 확인하지 못해 충족으로 단정하지 않았어요. 공고문에서 기준을 확인해 주세요.");
+      if (flags.doubt.has(e.id)) return toCheck(c, "이 조건의 숫자 기준을 원문에서 확인하지 못해 충족으로 단정하지 않았어요. 공고문에서 기준을 확인해 주세요.");
       return c;
     }
     // 근거 인용이 없거나 숫자 기준을 확인하지 못한 조건으로는 '맞지 않는다'고 단정하지 않는다(잘못 읽은 기준 때문에 포기하지 않게).
-    if (uncited || flags.doubtNotMet.has(e.id)) return toCheck(c, "이 조건의 숫자 기준을 원문에서 확인하지 못해, 맞지 않는다고 단정하지 않았어요. 공고문에서 기준을 확인해 주세요.");
+    if (uncited || flags.doubt.has(e.id)) return toCheck(c, "이 조건의 숫자 기준을 원문에서 확인하지 못해, 맞지 않는다고 단정하지 않았어요. 공고문에서 기준을 확인해 주세요.");
     // 탈락은 이 조건에 연결된, 실제로 답한 질문을 근거로 댈 때만 인정한다. 제외 조건에 '해당 없음'이라 답한 것은 근거가 아니다.
     const supports = (id: string) => answered(id) && !(e.kind === "exclusion" && /^해당\s*없음$/.test(answers[id].trim()));
     if (!c.failed_answer_ids.length || !c.failed_answer_ids.every(supports)) return toCheck(c, NEED_ANSWER);

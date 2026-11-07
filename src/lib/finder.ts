@@ -176,9 +176,9 @@ function judge(c: Criterion, p: Profile, flags: ReturnType<typeof readFlags>, ct
   } else if (status === "not_met" && c.rule.has_exception) {
     reason = `${reason} 예외 조항을 감안해도 기준과 차이가 커요.`;
   }
-  if (status === "not_met" && flags.doubtNotMet.has(c.id)) {
+  if (status === "not_met" && flags.doubt.has(c.id)) {
     status = "unknown"; reason = `${reason} 다만 원문에서 숫자 기준을 확인하지 못했어요. 공고를 확인해 주세요.`;
-  } else if (status === "met" && flags.doubtMet.has(c.id)) {
+  } else if (status === "met" && flags.doubt.has(c.id)) {
     status = "unknown"; reason = "원문에서 이 조건의 숫자 기준을 확인하지 못했어요. 공고문에서 기준을 확인해 주세요.";
   }
   return { status, reason };
