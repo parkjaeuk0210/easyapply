@@ -21,6 +21,14 @@ export const ANALYZE_SYSTEM = `당신은 EasyApply의 공고문 분석가입니�
 - eligibility: 신청 자격을 판단 가능한 단위로 쪼갭니다(나이, 거주지, 소득, 재산, 주택, 재학·취업 상태, 중복 수혜 등). kind는 required(충족해야 함), exclusion(해당하면 신청 불가), preference(우대·가점). id는 c1, c2… 순서. requirement는 쉬운 말로 쓴 조건, detail은 예외·계산식·표의 수치처럼 판단에 필요한 세부 내용.
   - 필수 조건을 뒤집어 제외 조건으로 다시 만들지 않습니다(예: '미취업'이 필수면 '취업 중이면 불가'를 따로 두지 않음).
   - 특정 대상에게만 붙는 조건(예: 제약기업 지원자만 해당하는 전공 요건)은 모두에게 필요한 조건처럼 쓰지 않습니다. detail에 "○○ 지원자만 해당"을 적고, kind는 그대로 두되 applies_to에 그 대상을 적습니다. 모두에게 적용되면 applies_to는 null입니다.
+  - rule: 조건을 아래 형식 중 하나로 그대로 옮길 수 있을 때만 채우고, 해석이 조금이라도 필요하면 null입니다. 숫자와 지역명은 그 조건의 quote에 적힌 그대로 씁니다. 해당 형식에 쓰지 않는 필드는 생략합니다. required는 "이 범위에 들어야 함", exclusion은 "이 범위에 들면 신청 불가"를 뜻합니다.
+    - age: 만 나이 범위. min_age·max_age(한쪽만 있으면 다른 쪽 생략). 공고가 나이 기준일을 정했으면 age_basis_date(YYYY-MM-DD).
+    - birth_date: 출생일 범위. born_from·born_to(YYYY-MM-DD, 경계 포함).
+    - region: 주민등록·거주지 조건. regions에 공고에 적힌 지역명을 시·도·시·군·구까지 그대로(예: "전라남도 해남군", "서울특별시"). 거주 기간 조건이 있으면 min_residence_months.
+    - education: 학력·재학 상태가 education 목록 안에 들어야 하는 조건. 값: middle_or_less(중학교 졸업 이하), hs_student(고등학교 재학), hs_grad(고등학교 졸업), college_student(대학 재학), college_leave(대학 휴학), college_grad(대학 졸업), grad_school(대학원 재학·졸업).
+    - employment: 취업 상태가 employment 목록 안에 들어야 하는 조건. 값: unemployed(일하지 않음·구직 중), employee(직장인), part_time(아르바이트·단기 근로), self_employed(사업자·프리랜서).
+    - income: 기준 중위소득 % 상한이면 median_pct_max. 금액 상한이면 income_max_won(원 단위 정수)·income_period(month/year)·income_basis(household 가구/personal 본인).
+    - 병역 기간만큼 나이 연장처럼 범위를 넓히는 예외가 있으면 has_exception=true.
 - documents: 제출 서류마다 하나씩. necessity는 required(모두 제출), conditional(해당자만), optional. condition은 해당자 조건, how_to_get은 일반적으로 발급받는 곳(예: 정부24, 주민센터, 은행 앱) — 공고문에 없으면 널리 알려진 발급처를 쓰되 확실하지 않으면 null. tip은 발급 기준일·서명 등 실수하기 쉬운 점.
 - cautions: 탈락·환수·제외로 이어질 수 있는 내용은 severity=high.
 - glossary: 원문에 실제로 나오며 자격 판단·서류 준비·신청 절차를 이해하는 데 필요한 행정·법률·소득 관련 용어만 고릅니다(예: 기준 중위소득, 소득인정액, 가구원, 무주택). 일상적인 단어·기관 이름·설명이 중복되는 용어는 제외합니다. 개수를 채우려고 만들지 말고 없으면 빈 배열로 둡니다. plain은 이 공고에서 그 용어가 어떤 의미인지 쉬운 말로 설명하며, 공고문에 없는 계산법·수치·자격 요건을 덧붙이지 않습니다.
@@ -30,6 +38,7 @@ export const ANALYZE_SYSTEM = `당신은 EasyApply의 공고문 분석가입니�
   - 소득·재산처럼 본인이 정확히 모를 수 있는 항목은 범위형 select로 묻고 "잘 모르겠어요"를 선택지에 넣습니다.
   - 신청 제외 대상(exclusion)은 multi(복수 선택)로 묶어 묻습니다: options에 제외 사유를 하나씩 짧게 쓰고 마지막에 "해당 없음"을 넣습니다. 어떤 항목을 골랐는지로 조건별 판정이 가능해야 합니다.
   - yes_no 질문은 options를 빈 배열로 둡니다. label은 신청자에게 말 거는 질문 문장으로, help는 한두 문장으로 짧게.
+- topics: 이 공고의 지원 분야 1~3개. jobs(일자리), housing(주거), startup(창업), education(교육·훈련), living(생활비·금융), health(건강·돌봄), culture(문화·여가), other(기타).
 - reading_notes: 흐리거나 잘려서 읽기 어려운 부분, 또는 공고문에 빠져 있어 신청 전에 기관에 꼭 물어봐야 할 점을 최대 3개, 200자 이내로 적습니다. 없으면 null.
 - transcript: 사용자 메시지에서 요청한 경우에만 쪽별 전체 텍스트를 옮겨 적고, 요청이 없으면 빈 배열.`;
 
