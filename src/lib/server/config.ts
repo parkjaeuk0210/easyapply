@@ -4,7 +4,7 @@ export const isProduction = () => process.env.NODE_ENV === "production" || isHos
 export const usageLimitsEnabled = () => process.env.EASYAPPLY_USAGE_LIMITS === "on";
 
 // "demo" and "none" switch AI off on purpose.
-const PROVIDER_SETTINGS = ["auto", "openai", "api", "anthropic", "cli", "demo", "none"];
+const PROVIDER_SETTINGS = ["auto", "api", "anthropic", "cli", "demo", "none"];
 export const EFFORTS = ["low", "medium", "high", "xhigh", "max"] as const;
 
 /** EASYAPPLY_PROVIDER, or null when it is not a known setting. */
@@ -14,27 +14,14 @@ export function providerSetting(): string | null {
 }
 
 /** The provider the environment selects. "cli" still needs a local binary check. */
-export function selectedProvider(): "openai" | "api" | "cli" | "none" {
+/** All hosted AI calls go through the Anthropic SDK; "cli" is a localhost-only fallback. */
+export function selectedProvider(): "api" | "cli" | "none" {
   const setting = providerSetting();
-  const openai = !!process.env.OPENAI_API_KEY?.trim();
   const anthropic = !!(process.env.ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_AUTH_TOKEN?.trim());
-  if (setting === "openai") return openai ? "openai" : "none";
   if (setting === "api" || setting === "anthropic") return anthropic ? "api" : "none";
   if (setting === "cli") return "cli";
   if (setting !== "auto") return "none";
-  return openai ? "openai" : anthropic ? "api" : "cli";
-}
-
-export function openAIConfig() {
-  const efforts = ["none", "low", "medium", "high", "xhigh", "max"] as const;
-  const tiers = ["auto", "default", "flex", "priority", "fast"] as const;
-  const model = process.env.EASYAPPLY_OPENAI_MODEL || "gpt-6-astra";
-  const effort = (process.env.EASYAPPLY_OPENAI_REASONING_EFFORT || "medium") as typeof efforts[number];
-  const tier = (process.env.EASYAPPLY_OPENAI_SERVICE_TIER || "fast") as typeof tiers[number];
-  if (!efforts.includes(effort) || !tiers.includes(tier) || (model.startsWith("gpt-6-astra") && effort === "none")) {
-    throw new Error("Invalid OpenAI configuration");
-  }
-  return { model, reasoning: { effort }, service_tier: tier };
+  return anthropic ? "api" : "cli";
 }
 
 export function intEnv(name: string, fallback: number, min: number, max: number) {
@@ -80,9 +67,6 @@ export function configurationIssues(): string[] {
   if (!providerSetting()) issues.push("provider");
   // Only the active provider's settings can break a request.
   const provider = selectedProvider();
-  if (provider === "openai") {
-    try { openAIConfig(); } catch { issues.push("openai_settings"); }
-  }
   const effort = process.env.EASYAPPLY_EFFORT || "medium";
   if ((provider === "api" || provider === "cli") && !EFFORTS.includes(effort as typeof EFFORTS[number])) issues.push("ai_settings");
   const speed = process.env.EASYAPPLY_ANTHROPIC_SPEED || "standard";

@@ -8,10 +8,10 @@
 
 | 항목 | 상태 |
 |---|---|
-| 배포 | 공개 주소가 Production `dpl_AqPskTwmhsxq8SyreEziJjVm7Z5p`(11-07 01:46:41 생성, 01:47 승격)를 가리킵니다. 소스는 00:36 배포(`dpl_5eQuXZrXd5P6SaEsGtDUjqkmvXBC`)에 첫 화면 중간안(태그줄·제목·설명·예시 카드 복원)을 더한 `release-landing` 브랜치(태그 `prod-20261107-0146`)입니다. 서버 결함 수리분은 3차 수리(`42df683`)와 AI 고지 복원(`f700f89`)까지 main에 있고 테스트 204개·사전 점검을 통과했지만, 09:05 독립 재검토가 마감 판정 경로의 결함 7건을 재현해 보류로 판정해 아직 배포하지 않았습니다(검토 기록 `reports/easyapply-eval-20261107/round3-0900/REVIEW3-codex.md`) |
-| AI | Anthropic API(`EASYAPPLY_PROVIDER=api`, 상태 API `provider:"api"`), `claude-opus-5-5`, 추론 `medium`, 처리 속도 `fast`. OpenAI 키도 등록되어 있지만 사용하지 않습니다 |
-| 호출 한도 | **해제.** Production에 `EASYAPPLY_USAGE_LIMITS`가 없어(상태 API `usage_limits_enabled:false`) 같은 세션의 중복 실행 방지만 적용합니다 |
-| 업로드·형식 | 합계 상한은 공급자별(Anthropic 22 MiB, OpenAI·로컬 24 MiB, 4 MiB 초과는 비공개 Blob 직접 업로드), 사진 10장·장당 5 MiB. PDF·HWP·HWPX·JPG·PNG·WEBP·GIF |
+| 배포 | 공개 주소가 Production `dpl_9BsXT8qyLb9xZhyvc4kdwx6aVaqx`(11-07 09:37 생성, 09:40 승격)를 가리킵니다. main의 3차 수리(`42df683`), AI 고지 복원(`f700f89`), 'AI 맞춤 공고 찾기'·Claude 단일화·분석 결과 재사용(`finder` 브랜치)을 포함합니다. 09:05 독립 재검토가 재현한 마감 판정 경로 결함 7건은 아직 고치지 않았습니다(검토 기록 `reports/easyapply-eval-20261107/round3-0900/REVIEW3-codex.md`). 직전 공개본(롤백 기준)은 `dpl_AqPskTwmhsxq8SyreEziJjVm7Z5p`입니다 |
+| AI | Anthropic API(`EASYAPPLY_PROVIDER=api`, 상태 API `provider:"api"`), `claude-opus-5-5`, 추론 `medium`, 처리 속도 `fast`. 모든 AI 호출은 Anthropic 공식 SDK(`@anthropic-ai/sdk`)로 서버에서만 합니다 |
+| 호출 한도 | **해제.** Production에 `EASYAPPLY_USAGE_LIMITS`가 없어(상태 API `usage_limits_enabled:false`) 같은 세션의 동시 실행(5개까지) 제한만 적용합니다 |
+| 업로드·형식 | 합계 상한은 공급자별(Anthropic 22 MiB, 로컬 24 MiB, 4 MiB 초과는 비공개 Blob 직접 업로드), 사진 10장·장당 5 MiB. PDF·HWP·HWPX·JPG·PNG·WEBP·GIF |
 | 검증 | `npm test`, `npm run typecheck`, `npm run lint`로 확인합니다 |
 
 한도를 켜려면 Vercel Production에 `EASYAPPLY_USAGE_LIMITS=on`을 추가하고 재배포합니다. 이때 IP·세션별 10분당 분석 8회·판정 24회 한도는 코드에 고정되어 있어(`src/lib/server/guard.ts`의 `quota()`) 같은 Wi-Fi(같은 공인 IP)를 쓰는 심사위원들이 함께 걸릴 수 있습니다. 전체 일일·동시 한도는 등록된 `EASYAPPLY_DAILY_AI_LIMIT`·`EASYAPPLY_MAX_CONCURRENT` 값을, IP·세션별 24시간 한도는 변수가 없으므로 기본 20회를 따릅니다.
@@ -34,13 +34,13 @@ Node.js 22 이상이 필요합니다.
 npm ci
 cp .env.example .env.local # 이미 파일이 있으면 덮어쓰지 마세요
 chmod 600 .env.local
-# 편집기에서 ANTHROPIC_API_KEY(운영과 같게 하려면 EASYAPPLY_PROVIDER=api) 또는 OPENAI_API_KEY를 설정
+# 편집기에서 ANTHROPIC_API_KEY를 설정(운영과 같게 하려면 EASYAPPLY_PROVIDER=api)
 npm run dev -- -p 3123
 ```
 
 http://127.0.0.1:3123 에서 사용합니다. 개발 서버는 loopback에만 바인딩됩니다. 키를 명령줄 인자·소스 코드·채팅·스크린샷에 넣지 마세요. `.env.local`은 Git 및 Vercel 업로드에서 제외됩니다. 예제에는 빈 값만 유지하세요.
 
-`EASYAPPLY_PROVIDER=auto`(기본)는 OpenAI 키, Anthropic 키, 개발 환경의 로컬 Claude Code 순서로 선택합니다. 두 키가 모두 있는 운영 환경은 `api`로 Anthropic을 지정합니다. 지정한 공급자의 키가 없으면 다른 공급자로 넘어가지 않고 미설정으로 표시합니다. Anthropic 기본값은 `claude-opus-5-5`, 추론 `medium`, 처리 속도 `standard`이며 운영은 `fast`입니다. 결과는 `easyapply_result` 도구 입력으로 받아 서버에서 전체 스키마를 검증합니다. OpenAI 기본값은 `gpt-6-astra`, 추론 `medium`, 처리 등급 `fast`입니다. 변수와 허용 값은 아래 운영 환경 표에 있으며, 설정은 공고 분석과 자격 확인에 함께 적용합니다. 상태 API는 요청 설정을 표시하고 서버 사용량 로그는 실제 응답의 모델·추론·처리 등급(속도)을 기록합니다. API 오류 시 다른 공급자로 몰래 재시도하지 않습니다. 로컬 Claude Code는 로그인된 CLI를 사용하며 Vercel에서는 실행되지 않습니다. 샘플 체험 기능은 제거했으며 실제 파일 업로드만 제공합니다. 키가 없으면 AI 연결 안내를 표시합니다.
+`EASYAPPLY_PROVIDER=auto`(기본)는 Anthropic 키가 있으면 Claude API를, 없으면 개발 환경에서만 로컬 Claude Code를 씁니다. 운영은 `api`입니다. 지정한 공급자의 키가 없으면 다른 공급자로 넘어가지 않고 미설정으로 표시합니다. Anthropic 기본값은 `claude-opus-5-5`, 추론 `medium`, 처리 속도 `standard`이며 운영은 `fast`입니다. 결과는 `easyapply_result` 도구 입력으로 받아 서버에서 전체 스키마를 검증합니다. 변수와 허용 값은 아래 운영 환경 표에 있으며, 설정은 공고 분석과 자격 확인에 함께 적용합니다. 상태 API는 요청 설정을 표시하고 서버 사용량 로그는 실제 응답의 모델·추론·처리 등급(속도)을 기록합니다. API 오류 시 다른 공급자로 몰래 재시도하지 않습니다. 로컬 Claude Code는 로그인된 CLI를 사용하며 Vercel에서는 실행되지 않습니다. 샘플 체험 기능은 제거했으며 실제 파일 업로드만 제공합니다. 키가 없으면 AI 연결 안내를 표시합니다.
 
 ## API와 처리 과정
 
@@ -57,7 +57,7 @@ http://127.0.0.1:3123 에서 사용합니다. 개발 서버는 loopback에만 �
 
 접수 마감은 `is_application_deadline`으로 후속 서류 제출·이의신청 등의 마감과 구분합니다. 접수 기간이 끝났으면 자격 조건이 맞아도 확인 필요로 표시하고, 서류·제출 할 일 대신 "추가 모집 여부 확인"을 안내합니다. 답변이나 추가 상황을 수정하면 기존 판정은 즉시 초기화합니다. HWPX 병합 셀이나 해석할 수 없는 셀 병합 정보도 표 구조 확인이 필요한 문서로 처리합니다.
 
-답변과 분석 결과는 EasyApply DB에 저장하지 않습니다. Vercel에서 합계 4 MiB를 넘는 파일은 비공개 Blob에 임시 저장하고 서버에서 읽은 뒤 즉시 삭제합니다. 취소·중단된 파일은 브라우저 정리 요청과 매일 실행되는 Cron으로 정리합니다. 읽기 실패 때도 삭제를 시도하며, 저장소 장애로 삭제되지 않으면 다음 정리 작업에서 재시도합니다. 처리 중인 파일은 메모리에서 사용하고 AI 제공자에게 전송합니다. OpenAI 요청에는 `store:false`를 사용하며, 현재 운영 공급자인 Anthropic 요청에는 이에 해당하는 옵션을 지정하지 않습니다. 제공자의 별도 보존 정책까지 '저장 안 함'으로 보장하지 않습니다. 로컬 CLI 모드의 임시 파일은 처리 후 지웁니다. 로그에는 요청 ID, 공급자, 지연, 사용량, 오류 코드만 남기고 원문·답변·키는 남기지 않습니다. 브라우저에는 체크리스트 완료 표시가 남습니다.
+답변과 판정 결과는 저장하지 않습니다. 분석 결과는 같은 PDF·HWP·HWPX를 다시 분석하지 않도록 파일 내용의 sha256을 키로 Redis에 7일 보관합니다(`src/lib/server/analysis-cache.ts`). 키에는 모델·추론 설정·지시문·스키마 버전이 들어가 이 중 하나가 바뀌면 지난 결과를 쓰지 않습니다. 파일 자체와 사진 분석은 보관하지 않습니다. Vercel에서 합계 4 MiB를 넘는 파일은 비공개 Blob에 임시 저장하고 서버에서 읽은 뒤 즉시 삭제합니다. 취소·중단된 파일은 브라우저 정리 요청과 매일 실행되는 Cron으로 정리합니다. 읽기 실패 때도 삭제를 시도하며, 저장소 장애로 삭제되지 않으면 다음 정리 작업에서 재시도합니다. 처리 중인 파일은 메모리에서 사용하고 AI 제공자에게 전송합니다. Anthropic 요청에는 별도 보존 옵션을 지정하지 않습니다. 제공자의 별도 보존 정책까지 '저장 안 함'으로 보장하지 않습니다. 로컬 CLI 모드의 임시 파일은 처리 후 지웁니다. 로그에는 요청 ID, 공급자, 지연, 사용량, 오류 코드만 남기고 원문·답변·키는 남기지 않습니다. 브라우저에는 체크리스트 완료 표시가 남습니다.
 
 ## 한글 문서 지원과 한계
 
@@ -81,10 +81,8 @@ Vercel 프로젝트 **Settings → Environment Variables**에 아래 값을 서�
 | 변수 | 용도 |
 |---|---|
 | `ANTHROPIC_API_KEY` | Anthropic API 서버 호출(현재 운영). `ANTHROPIC_AUTH_TOKEN`도 인식 |
-| `OPENAI_API_KEY` | OpenAI 서버 호출. 운영에 등록되어 있으나 현재 사용하지 않음 |
-| `EASYAPPLY_PROVIDER` | `auto`(기본: OpenAI→Anthropic→로컬 CLI)·`openai`·`api`(`anthropic`)·`cli`·`none`. 그 밖의 값은 설정 오류. 운영 `api` |
+| `EASYAPPLY_PROVIDER` | `auto`(기본: Anthropic→로컬 CLI)·`api`(`anthropic`)·`cli`·`none`. 그 밖의 값은 설정 오류. 운영 `api` |
 | `EASYAPPLY_MODEL` / `EASYAPPLY_EFFORT` / `EASYAPPLY_ANTHROPIC_SPEED` | Anthropic 모델(기본 `claude-opus-5-5`), 추론 `low`·`medium`(기본)·`high`·`xhigh`·`max`(로컬 Claude에도 적용), 속도 `standard`(기본)·`fast` |
-| `EASYAPPLY_OPENAI_MODEL` / `EASYAPPLY_OPENAI_REASONING_EFFORT` / `EASYAPPLY_OPENAI_SERVICE_TIER` | OpenAI 모델(기본 `gpt-6-astra`), 추론 `none`~`max`(기본 `medium`, Astra는 `none` 불가), 처리 등급 `auto`·`default`·`flex`·`priority`·`fast`(기본) |
 | `EASYAPPLY_SIGNING_SECRET` | 32바이트 이상 무작위 서명 키 |
 | `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` | 운영 필수. 인스턴스 간 공유하는 중복 실행 방지·(한도 활성화 시) 호출량 저장소. Vercel Marketplace의 `KV_REST_API_URL` / `KV_REST_API_TOKEN` 쌍도 지원 |
 | `BLOB_READ_WRITE_TOKEN` / `BLOB_STORE_ID` | Vercel 비공개 Blob 연결 시 자동 주입(둘 중 하나). 4 MiB 초과 업로드용 |
@@ -107,7 +105,7 @@ Vercel 프로젝트 **Settings → Environment Variables**에 아래 값을 서�
 
 제한을 활성화한 경우에만 비공개 Blob 업로드 권한에도 상한(전체 2,400 MiB·1,000개는 업로드 티켓 수명인 30분, IP·세션별 240 MiB·100개는 24시간)을 적용합니다. 심사용 기본 설정에서는 이 누적 상한도 해제됩니다.
 
-파일 합계 상한은 공급자별로 Anthropic **22 MiB**(요청 32 MB 한도에 base64 증가분 고려), OpenAI·로컬 **24 MiB**이고, 사진은 최대 10장·장당 5 MiB입니다. 상한은 상태 API의 `max_upload_bytes`로 화면에 전달하고, 넘는 파일은 업로드 전에 차단합니다. Vercel에서는 4 MiB 초과 파일을 비공개 Blob으로 직접 업로드해 [플랫폼의 함수 요청 크기 제한](https://vercel.com/docs/functions/limitations)을 넘기지 않습니다. Blob 또는 Cron 설정이 없으면 Vercel 한도는 4 MiB로 내려갑니다. 외부 URL에서 임의 파일을 받아오는 경로는 제공하지 않습니다. AI 호출은 기본 240초, API 함수는 최대 300초입니다.
+파일 합계 상한은 공급자별로 Anthropic **22 MiB**(요청 32 MB 한도에 base64 증가분 고려), 로컬 **24 MiB**이고, 사진은 최대 10장·장당 5 MiB입니다. 상한은 상태 API의 `max_upload_bytes`로 화면에 전달하고, 넘는 파일은 업로드 전에 차단합니다. Vercel에서는 4 MiB 초과 파일을 비공개 Blob으로 직접 업로드해 [플랫폼의 함수 요청 크기 제한](https://vercel.com/docs/functions/limitations)을 넘기지 않습니다. Blob 또는 Cron 설정이 없으면 Vercel 한도는 4 MiB로 내려갑니다. 외부 URL에서 임의 파일을 받아오는 경로는 제공하지 않습니다. AI 호출은 기본 240초, API 함수는 최대 300초입니다.
 
 ```sh
 npm run check:config                 # 키 값 없이 로컬 설정 점검
@@ -125,4 +123,4 @@ npm audit --omit=dev
 
 독립 HTML의 `standalone/`은 기존 Claude 공유 페이지용 시연 코드입니다. 서버 세션·서명·공유 호출 제한이 있는 운영 앱은 Next.js 경로이며, 독립 HTML은 운영 배포에 포함하지 않습니다.
 
-공식 문서: [OpenAI PDF 입력](https://developers.openai.com/api/docs/guides/file-inputs), [구조화 출력](https://developers.openai.com/api/docs/guides/structured-outputs), [Vercel 비밀 환경변수](https://vercel.com/docs/environment-variables/sensitive-environment-variables).
+공식 문서: [Claude PDF 입력](https://docs.claude.com/en/docs/build-with-claude/pdf-support), [Claude 도구 사용](https://docs.claude.com/en/docs/agents-and-tools/tool-use/overview), [Vercel 비밀 환경변수](https://vercel.com/docs/environment-variables/sensitive-environment-variables).

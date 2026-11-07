@@ -41,7 +41,7 @@ function ipBucket(ip: string) {
   return `${groups.slice(0, 4).map((g) => g.padStart(4, "0")).join(":")}::/64`;
 }
 
-async function redis(command: (string | number)[]): Promise<unknown> {
+export async function redis(command: (string | number)[]): Promise<unknown> {
   const { url, token } = redisConfig();
   if (!url || !token) throw new AppError("rate_limit_unavailable", "요청량 확인에 실패했어요. 잠시 후 다시 시도해 주세요.", 503);
   try {
@@ -158,13 +158,18 @@ for i=1,nkeys do
     return {10+i, redis.call('PTTL', KEYS[i])}
   end
 end
-if redis.call('EXISTS', session) == 1 then return {2, redis.call('PTTL', session)} end
+redis.call('ZREMRANGEBYSCORE', session, '-inf', now)
+if redis.call('ZCARD', session) >= tonumber(ARGV[6+nkeys]) then
+  local first = redis.call('ZRANGE', session, 0, 0, 'WITHSCORES')
+  return {2, tonumber(first[2]) - now}
+end
 if tonumber(ARGV[4]) > 0 and redis.call('ZCARD', active) >= tonumber(ARGV[4]) then
   local first = redis.call('ZRANGE', active, 0, 0, 'WITHSCORES')
   return {3, tonumber(first[2]) - now}
 end
 if ARGV[5+nkeys] == '0' then return {0, 0} end
-redis.call('SET', session, ARGV[2], 'PX', ARGV[3])
+redis.call('ZADD', session, now + tonumber(ARGV[3]), ARGV[2])
+redis.call('PEXPIRE', session, ARGV[3])
 redis.call('ZADD', active, now + tonumber(ARGV[3]), ARGV[2])
 redis.call('PEXPIRE', active, ARGV[3])
 return {0, 0}`;
@@ -182,7 +187,7 @@ end
 return {0, 0}`;
 const RELEASE_SCRIPT = `
 redis.call('ZREM', KEYS[1], ARGV[1])
-if redis.call('GET', KEYS[2]) == ARGV[1] then redis.call('DEL', KEYS[2]) end
+redis.call('ZREM', KEYS[2], ARGV[1])
 return 1`;
 
 function quota(req: Request, sessionId: string, kind: Kind) {
@@ -221,19 +226,24 @@ function admissionError([code, retryMs]: number[]) {
     : "지금은 분석 요청이 많거나 이용 한도에 도달했어요. 잠시 후 다시 시도해 주세요.", duplicate ? 409 : 429, Math.max(1, Math.ceil(retryMs / 1000)));
 }
 
+// 맞춤 공고 찾기는 공고를 최대 5개 받아 한꺼번에 읽는다. 전체 동시 실행 상한(EASYAPPLY_MAX_CONCURRENT)은 따로 적용된다.
+export const SESSION_SLOTS = 5;
+
 async function leaseAI(req: Request, sessionId: string, kind: Kind, reserve: boolean) {
   const now = Date.now(), id = randomUUID(), leaseMs = 310_000;
   const { keys, limits } = quota(req, sessionId, kind);
   const concurrent = usageLimitsEnabled() ? intEnv("EASYAPPLY_MAX_CONCURRENT", 3, 1, 20) : 0;
-  const active = "easyapply:v1:active", own = `easyapply:v1:active:${sessionId}`;
+  // 한 세션은 AI 호출을 동시에 SESSION_SLOTS개까지 돌린다.
+  const active = "easyapply:v1:active", own = `easyapply:v1:session-leases:${sessionId}`;
   let result: number[];
   if (remote()) {
-    result = admissionResult(await redis(["EVAL", LEASE_SCRIPT, keys.length + 2, ...keys, active, own, now, id, leaseMs, concurrent, ...limits, reserve ? 1 : 0]));
+    result = admissionResult(await redis(["EVAL", LEASE_SCRIPT, keys.length + 2, ...keys, active, own, now, id, leaseMs, concurrent, ...limits, reserve ? 1 : 0, SESSION_SLOTS]));
   } else {
     prune(now);
     const s = local();
     const leases = [...s.leases.values()];
-    const busy = leases.find((v) => v.session === sessionId);
+    const mine = leases.filter((v) => v.session === sessionId);
+    const busy = mine.length >= SESSION_SLOTS ? mine.reduce((a, b) => (a.expires <= b.expires ? a : b)) : undefined;
     const blocked = keys.findIndex((key, i) => (s.counters.get(key)?.count ?? 0) >= limits[i]);
     result = blocked >= 0 ? [11 + blocked, s.counters.get(keys[blocked])!.expires - now]
       : busy ? [2, busy.expires - now]

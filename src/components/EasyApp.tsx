@@ -13,6 +13,7 @@ import type { ActiveEvidence, Source } from "./types";
 import { deadlineInfo, EvidenceContext, evidenceId, Logo, Spinner } from "./ui";
 import { CautionsPanel, DocumentsPanel, EligibilityPanel, GlossaryPanel, OverviewPanel } from "./AnalysisPanels";
 import ProfileCheck from "./ProfileCheck";
+import Finder, { type AnalyzeResponse } from "./Finder";
 import SourcePanel from "./SourcePanel";
 
 const SourceViewer = dynamic(() => import("./SourceViewer"), {
@@ -20,7 +21,7 @@ const SourceViewer = dynamic(() => import("./SourceViewer"), {
   loading: () => <div className="h-full animate-pulse rounded-2xl bg-surface" />,
 });
 
-type Provider = "openai" | "api" | "cli" | "none";
+type Provider = "api" | "cli" | "none";
 type Status = { provider: Provider; model: string | null; hosted?: boolean; max_upload_bytes?: number; max_direct_upload_bytes?: number; large_uploads?: boolean; access_required?: boolean; message?: string | null };
 type Tab = "overview" | "eligibility" | "documents" | "cautions" | "glossary" | "mine";
 
@@ -49,6 +50,9 @@ export default function EasyApp() {
   const controller = useRef<AbortController | null>(null);
   const pendingUpload = useRef<{ ticket: string; expiresAt: number; files: File[]; source: Source } | null>(null);
   const [canRetryUpload, setCanRetryUpload] = useState(false);
+  const [menu, setMenu] = useState<"analyze" | "finder">("analyze");
+  // 맞춤 공고 찾기에서 연 상세 화면이면, 머리글 버튼이 추천 목록으로 돌아간다.
+  const [fromFinder, setFromFinder] = useState(false);
 
   useEffect(() => () => {
     controller.current?.abort();
@@ -103,6 +107,28 @@ export default function EasyApp() {
     setExtra("");
     setUploadProgress(null);
     setTab("overview");
+    setFromFinder(false);
+  };
+
+  // 맞춤 공고 찾기에서 이미 받은 분석으로 상세 화면을 연다(다시 호출하지 않는다).
+  const openFound = (file: File, j: AnalyzeResponse) => {
+    operation.current++;
+    controller.current?.abort();
+    const src: Source = j.source?.kind === "text" ? { ...j.source, originalFile: file } : { kind: "pdf", url: URL.createObjectURL(file), name: file.name };
+    filesRef.current = [file];
+    setError(null);
+    setSource(src);
+    setAnalysis(AnalysisSchema.parse(j.analysis));
+    setAnalysisToken(j.analysis_token ?? null);
+    setIndex(null);
+    setActive(null);
+    setMatch(null);
+    setAnswers({});
+    setExtra("");
+    setTab("overview");
+    setStage("result");
+    setFromFinder(true);
+    window.scrollTo(0, 0);
   };
 
   const analyze = useCallback(async (files: File[], src: Source, reuse?: { ticket: string; expiresAt: number }) => {
@@ -286,10 +312,17 @@ export default function EasyApp() {
     <div className="min-h-screen">
       <Header
         onHome={stage !== "upload" ? reset : undefined}
+        homeLabel={fromFinder ? "추천 목록으로" : "새 공고문"}
         onSource={stage !== "upload" && source ? () => setSheetOpen(true) : undefined}
       />
 
-      {stage === "upload" && (
+      {stage === "upload" && <MenuBar menu={menu} onMenu={(m) => { setError(null); setMenu(m); }} />}
+      {/* 목록 상태를 지키려고 상세 화면을 보는 동안에도 맞춤 찾기를 숨겨 둔 채 유지한다. */}
+      <div hidden={!(stage === "upload" && menu === "finder")} className="mx-auto max-w-[1180px] px-4 pb-16 pt-6 sm:px-6">
+        <Finder status={status} canRunAI={canRunAI} onOpen={openFound} />
+      </div>
+
+      {stage === "upload" && menu === "analyze" && (
         <UploadScreen onFiles={onFiles} error={error} status={status} extra={extra} onExtra={updateExtra} onRetryUpload={canRetryUpload ? retryUpload : undefined} onUnlock={async (code) => {
           await fetch("/api/session", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ code }) }).then(responseJson);
           setStatus(await fetch("/api/status", { cache: "no-store" }).then(responseJson));
@@ -359,7 +392,7 @@ export default function EasyApp() {
 
 // ── 머리글 ──────────────────────────────────────────────────────
 
-function Header({ onHome, onSource }: { onHome?: () => void; onSource?: () => void }) {
+function Header({ onHome, homeLabel, onSource }: { onHome?: () => void; homeLabel: string; onSource?: () => void }) {
   const button = "rounded-xl border border-line px-3 py-2 text-[15px] font-semibold text-ink-2 hover:bg-surface-2";
   return (
     <header className="sticky top-0 z-20 border-b border-line bg-surface/90 backdrop-blur">
@@ -367,10 +400,26 @@ function Header({ onHome, onSource }: { onHome?: () => void; onSource?: () => vo
         {onHome ? <button type="button" onClick={onHome} aria-label="처음으로"><Logo /></button> : <Logo />}
         <div className="ml-auto flex items-center gap-2">
           {onSource && <button type="button" onClick={onSource} className={`${button} lg:hidden`}>원문 보기</button>}
-          {onHome && <button type="button" onClick={onHome} className={button}>새 공고문</button>}
+          {onHome && <button type="button" onClick={onHome} className={button}>{homeLabel}</button>}
         </div>
       </div>
     </header>
+  );
+}
+
+// ── 메뉴 ────────────────────────────────────────────────────────
+
+function MenuBar({ menu, onMenu }: { menu: "analyze" | "finder"; onMenu: (m: "analyze" | "finder") => void }) {
+  const items: ["analyze" | "finder", string][] = [["analyze", "공고문 분석"], ["finder", "AI 맞춤 공고 찾기"]];
+  return (
+    <nav aria-label="기능" className="mx-auto max-w-[1180px] px-4 pt-4 sm:px-6">
+      <div className="grid grid-cols-2 gap-1 rounded-2xl border border-line bg-surface p-1 sm:inline-grid">
+        {items.map(([key, name]) => (
+          <button key={key} type="button" aria-current={menu === key ? "page" : undefined} onClick={() => onMenu(key)}
+            className={`rounded-xl px-4 py-2.5 text-[16px] font-bold transition ${menu === key ? "bg-ink text-white" : "text-ink-2 hover:bg-surface-2"}`}>{name}</button>
+        ))}
+      </div>
+    </nav>
   );
 }
 
@@ -400,7 +449,7 @@ function UploadScreen({
   const [unlocking, setUnlocking] = useState(false);
 
   return (
-    <main className="mx-auto max-w-[640px] px-4 pb-16 pt-10 sm:px-6 lg:max-w-[1180px] lg:pt-16">
+    <main className="mx-auto max-w-[640px] px-4 pb-16 pt-6 sm:px-6 lg:max-w-[1180px] lg:pt-10">
       <div className="grid items-center gap-10 lg:grid-cols-[1.05fr_0.95fr]">
         <div className="min-w-0">
           <p className="text-[14px] font-semibold text-brand">청년 지원사업 · 장학금 · 정부 지원제도</p>
@@ -482,7 +531,7 @@ function UploadScreen({
               }}
             />
           </div>
-          <p className="mt-2 text-[14px] leading-relaxed text-ink-2">올린 파일과 적은 내용은 분석에만 쓰고 이 서비스에 저장하지 않아요. 분석은 미국 Anthropic의 AI가 하고, 그쪽에서도 30일 안에 지워져요.</p>
+          <p className="mt-2 text-[14px] leading-relaxed text-ink-2">올린 파일과 적은 내용은 분석에만 쓰고 이 서비스에 저장하지 않아요. 분석은 미국 Anthropic의 AI가 하고, 그쪽에서도 30일 안에 지워져요. 같은 파일을 다시 올리면 7일 동안은 지난 분석 결과를 다시 써요. 파일 자체는 저장하지 않아요.</p>
 
           {error && <div role="alert" className="mt-4 rounded-xl bg-bad-soft px-4 py-3 text-[16px] leading-relaxed text-bad">{error}</div>}
           {onRetryUpload && (

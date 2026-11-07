@@ -1,10 +1,10 @@
 import { test, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
-import { AnalysisSchema, MatchSchema } from '../src/lib/schema';
+import { AnalysisSchema, MatchSchema, toOutputSchema } from '../src/lib/schema';
 import { assertOrigin, readBody } from '../src/lib/server/http';
 import { createSession, session, signAnalysis, verifyAnalysis } from '../src/lib/server/tokens';
-import { acquireAI, limitAttempts } from '../src/lib/server/guard';
+import { acquireAI, limitAttempts, SESSION_SLOTS } from '../src/lib/server/guard';
 import { validateAnalysis, validateAnswers, finalizeMatch, settleApplication } from '../src/lib/server/validation';
 import { matchesSignature, readUploads, inspectPdf, verifyEvidence } from '../src/lib/server/uploads';
 import { detectProvider, runStructured } from '../src/lib/llm';
@@ -15,7 +15,6 @@ import { AppError, errorResponse } from '../src/lib/server/errors';
 import { extractHangul } from '../src/lib/server/hangul';
 import sample from './fixtures/samples/garam-analysis.json';
 import demo from './fixtures/samples/garam-match.json';
-import { zodTextFormat } from 'openai/helpers/zod';
 
 const baseline = { ...process.env };
 afterEach(() => {
@@ -152,8 +151,8 @@ test('application deadline classification must be consistent and is never guesse
   a.schedule[0].is_application_deadline = true;
   assert.throws(() => validateAnalysis(a));
 });
-test('OpenAI requires the application-deadline flag without an unsupported default annotation', () => {
-  const schema = zodTextFormat(AnalysisSchema, 'analysis').schema as {
+test('the result schema requires the application-deadline flag without an unsupported default annotation', () => {
+  const schema = toOutputSchema(AnalysisSchema) as {
     properties: { schedule: { items: { properties: Record<string, unknown>; required: string[] } } };
   };
   const schedule = schema.properties.schedule.items;
@@ -185,10 +184,13 @@ test('real PDF preflight reads pages and independently detects invented quotes',
   const v=verifyEvidence(a,result.index); assert(v.exact>0); assert(v.unverified_criteria.includes(a.eligibility[0].id));
   assert.equal(verifyEvidence(a,null).exact,0);
 });
-test('concurrency lease blocks duplicates and releases on completion',async()=>{
-  const r=req(); const id=crypto.randomUUID(); const release=await acquireAI(r,id,'analyze');
+test('a session runs at most SESSION_SLOTS AI calls at once and gets a slot back on completion',async()=>{
+  const r=req(); const id=crypto.randomUUID();
+  const held=[]; for(let i=0;i<SESSION_SLOTS;i++) held.push(await acquireAI(r,id,'analyze'));
   await assert.rejects(acquireAI(r,id,'match'),(e:AppError)=>e.code==='in_progress');
-  await release(); await release(); const next=await acquireAI(r,id,'match'); await next();
+  await held[0](); await held[0](); held[0]=await acquireAI(r,id,'match');
+  await assert.rejects(acquireAI(r,id,'analyze'),(e:AppError)=>e.code==='in_progress');
+  for(const release of held) await release();
 });
 test('login throttling works independently of session cookies',async()=>{
   process.env.EASYAPPLY_USAGE_LIMITS='on';
@@ -245,8 +247,8 @@ test('production with missing durable limiter fails before paid work',async()=>{
   assert.equal(result.status,503); assert.equal((await result.json()).error.code,'configuration');
 });
 test('provider status does not claim missing API credentials; CLI cannot run on Vercel',async()=>{
-  delete process.env.OPENAI_API_KEY; delete process.env.ANTHROPIC_API_KEY; delete process.env.ANTHROPIC_AUTH_TOKEN;
-  process.env.EASYAPPLY_PROVIDER='openai'; assert.equal(await detectProvider(),'none');
+  delete process.env.ANTHROPIC_API_KEY; delete process.env.ANTHROPIC_AUTH_TOKEN;
+  process.env.EASYAPPLY_PROVIDER='api'; assert.equal(await detectProvider(),'none');
   process.env.EASYAPPLY_PROVIDER='cli'; process.env.VERCEL='1'; assert.equal(await detectProvider(),'none');
 });
 test('upstream/internal errors never leak raw details to response',async()=>{
@@ -254,7 +256,7 @@ test('upstream/internal errors never leak raw details to response',async()=>{
   assert(!JSON.stringify(await r.json()).includes('sk-secret')); assert.equal(r.headers.get('cache-control'),'private, no-store');
 });
 test('cancelled requests never start an LLM call',async()=>{
-  process.env.EASYAPPLY_PROVIDER='openai'; process.env.OPENAI_API_KEY='test-not-real';
+  process.env.EASYAPPLY_PROVIDER='api'; process.env.ANTHROPIC_API_KEY='test-not-real';
   const c=new AbortController(); c.abort();
   await assert.rejects(runStructured({system:'test',text:'test',schema:MatchSchema,signal:c.signal}),(e:AppError)=>e.code==='cancelled');
 });

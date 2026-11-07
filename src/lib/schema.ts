@@ -18,6 +18,34 @@ export const EvidenceSchema = z.object({
 
 const withEvidence = { evidence: z.array(EvidenceSchema).max(10) };
 
+/** 'AI 맞춤 공고 찾기'가 규칙으로 비교하는 값의 목록. 화면 문구는 src/lib/finder.ts에 있다. */
+export const EDUCATION = ["middle_or_less", "hs_student", "hs_grad", "college_student", "college_leave", "college_grad", "grad_school"] as const;
+export const EMPLOYMENT = ["unemployed", "employee", "part_time", "self_employed"] as const;
+export const TOPICS = ["jobs", "housing", "startup", "education", "living", "health", "culture", "other"] as const;
+
+const maybe = <T extends z.ZodType>(t: T) => t.nullable().optional();
+/**
+ * 자격 조건을 코드로 비교할 수 있게 옮긴 값. 모델은 조건이 이 형식으로 정확히 옮겨질 때만 채우고,
+ * 서버(sanitizeRules)는 숫자·지역명이 그 조건의 원문 인용에 없으면 지운다.
+ */
+export const RuleSchema = z.object({
+  type: z.enum(["age", "birth_date", "region", "education", "employment", "income"]),
+  min_age: maybe(z.number().int()),
+  max_age: maybe(z.number().int()),
+  age_basis_date: maybe(z.iso.date()),
+  born_from: maybe(z.iso.date()),
+  born_to: maybe(z.iso.date()),
+  regions: z.array(z.string().max(60)).max(30).optional(),
+  min_residence_months: maybe(z.number().int()),
+  education: z.array(z.enum(EDUCATION)).max(EDUCATION.length).optional(),
+  employment: z.array(z.enum(EMPLOYMENT)).max(EMPLOYMENT.length).optional(),
+  median_pct_max: maybe(z.number()),
+  income_max_won: maybe(z.number().int()),
+  income_period: maybe(z.enum(["month", "year"])),
+  income_basis: maybe(z.enum(["household", "personal"])),
+  has_exception: z.boolean().prefault(false),
+});
+
 export const AnalysisSchema = z.object({
   title: label(),
   organization: label().nullable(),
@@ -50,6 +78,7 @@ export const AnalysisSchema = z.object({
       detail: text().nullable(),
       // 특정 대상(예: 제약기업 지원자)에게만 붙는 조건이면 그 대상. 모두에게 적용되면 null.
       applies_to: z.string().max(300).nullable().prefault(null),
+      rule: RuleSchema.nullish(),
       ...withEvidence,
     }),
   ).max(80),
@@ -82,6 +111,7 @@ export const AnalysisSchema = z.object({
   contact: text().nullable(),
   contact_evidence: z.array(EvidenceSchema).max(10).prefault([]),
   reading_notes: text().nullable(),
+  topics: z.array(z.enum(TOPICS)).max(3).prefault([]),
   transcript: z.array(z.object({ page: z.number().int().min(1).max(MAX_DOCUMENT_PAGES), text: z.string().max(30_000) })).max(MAX_DOCUMENT_PAGES),
   // 서버 전용: 인용 검증 뒤 서버가 정하는 공고 전체 접수 상태와 기준 마감일. 판정과 화면이 이 값만 쓴다.
   application_status: z.enum(["open", "closed", "unknown"]).prefault("unknown").describe("서버 전용 값. 항상 unknown으로 두세요."),
@@ -123,6 +153,10 @@ export type Analysis = z.infer<typeof AnalysisSchema>;
 export type Match = z.infer<typeof MatchSchema>;
 export type ProfileQuestion = Analysis["profile_questions"][number];
 export type Criterion = Analysis["eligibility"][number];
+export type Rule = z.infer<typeof RuleSchema>;
+export type Education = typeof EDUCATION[number];
+export type Employment = typeof EMPLOYMENT[number];
+export type Topic = typeof TOPICS[number];
 
 /** 구조화 출력(Claude API output_config / Claude CLI --json-schema)에 넘길 JSON Schema. */
 export function toOutputSchema(schema: z.ZodType): Record<string, unknown> {

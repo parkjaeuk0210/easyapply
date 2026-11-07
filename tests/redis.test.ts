@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
-import { acquireAI, chargeAI, checkAIAvailability, issueSession, limitAttempts, reserveUploadBudget } from '../src/lib/server/guard';
+import { acquireAI, chargeAI, checkAIAvailability, issueSession, limitAttempts, reserveUploadBudget, SESSION_SLOTS } from '../src/lib/server/guard';
 import { privateKey } from '../src/lib/server/tokens';
 import { MAX_UPLOAD_BYTES } from '../src/lib/limits';
 
@@ -38,11 +38,14 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
   try{
     process.env.EASYAPPLY_USAGE_LIMITS='on';
     process.env.UPSTASH_REDIS_REST_URL=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
-    process.env.UPSTASH_REDIS_REST_TOKEN='local-test-only';process.env.EASYAPPLY_MAX_CONCURRENT='2';process.env.EASYAPPLY_DAILY_AI_LIMIT='3';
+    process.env.UPSTASH_REDIS_REST_TOKEN='local-test-only';process.env.EASYAPPLY_MAX_CONCURRENT=String(SESSION_SLOTS+1);process.env.EASYAPPLY_DAILY_AI_LIMIT='3';
     const req=new Request('http://localhost:3123/api/analyze');
-    const attempts=await Promise.allSettled([acquireAI(req,'a','analyze'),acquireAI(req,'a','analyze')]);
-    assert.equal(attempts.filter(r=>r.status==='fulfilled').length,1);
-    const winner=attempts.find(r=>r.status==='fulfilled') as PromiseFulfilledResult<()=>Promise<void>>;
+    // One session holds at most SESSION_SLOTS slots, even when more requests race.
+    const attempts=await Promise.allSettled(Array.from({length:SESSION_SLOTS+1},()=>acquireAI(req,'a','analyze')));
+    assert.equal(attempts.filter(r=>r.status==='fulfilled').length,SESSION_SLOTS);
+    assert((attempts.find(r=>r.status==='rejected') as PromiseRejectedResult).reason.code==='in_progress');
+    const winners=attempts.filter(r=>r.status==='fulfilled') as PromiseFulfilledResult<()=>Promise<void>>[];
+    const winner={value:async()=>{for(const w of winners)await w.value();}};
     await chargeAI(req,'a','analyze');
     const releaseB=await admit(req,'b','analyze');
     // A full house reports when the earliest lease ends, not a fixed 5 seconds.
@@ -157,9 +160,10 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
       for(let i=0;i<5;i++)await checkAIAvailability(request,'preflight','analyze');
       assert.equal(await value('easyapply:v1:daily'),0);
       assert.equal(Number((await exec('redis-cli',['-s',socket,'ZCARD','easyapply:v1:active'])).stdout.trim()),0);
-      const release=await admit(request,'preflight','analyze');
+      const held=[await admit(request,'preflight','analyze')];
+      for(let i=1;i<SESSION_SLOTS;i++) held.push(await acquireAI(request,'preflight','analyze'));
       await assert.rejects(checkAIAvailability(request,'preflight','analyze'),(e:{code:string})=>e.code==='in_progress');
-      await release();
+      for(const release of held) await release();
       assert.equal(await value('easyapply:v1:daily'),1);
     });
     await t.test('new session issuance allows a shared venue Wi-Fi, is bounded per IP for 24 hours and cannot consume AI quota',async()=>{
@@ -190,6 +194,7 @@ test('Redis atomically enforces concurrency, global quota, and outage fails clos
         await reserveUploadBudget(request,'review-session',MAX_UPLOAD_BYTES,1);
       }
       const releases=await Promise.all(Array.from({length:12},(_,i)=>acquireAI(request,`judge-${i}`,'analyze')));
+      for(let i=1;i<SESSION_SLOTS;i++) releases.push(await acquireAI(request,'judge-0','analyze'));
       await assert.rejects(acquireAI(request,'judge-0','match'),(e:{code:string})=>e.code==='in_progress');
       await Promise.all(releases.map(release=>release()));
       for(let i=0;i<110;i++){const release=await admit(request,'review-session',i%2?'analyze':'match');await release();}

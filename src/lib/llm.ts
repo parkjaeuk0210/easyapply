@@ -1,6 +1,4 @@
 import Anthropic from "@anthropic-ai/sdk";
-import OpenAI from "openai";
-import { zodTextFormat } from "openai/helpers/zod";
 import { spawn } from "node:child_process";
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
@@ -11,14 +9,13 @@ import { z } from "zod";
 import { toOutputSchema } from "./schema";
 import { REQUEST_BUDGET_MS, analysisOutputTokens } from "./llm-limits";
 import { AppError, describeCause } from "./server/errors";
-import { EFFORTS, intEnv, isHosted, isProduction, openAIConfig, selectedProvider } from "./server/config";
+import { EFFORTS, intEnv, isHosted, isProduction, selectedProvider } from "./server/config";
 import { repairOutput } from "./server/repair";
 
-export type Provider = "openai" | "api" | "cli" | "none";
+export type Provider = "api" | "cli" | "none";
 export type InputFile = { name: string; mediaType: string; data: Buffer };
 type Effort = typeof EFFORTS[number];
 export const MODEL = process.env.EASYAPPLY_MODEL || "claude-opus-5-5";
-export const OPENAI_MODEL = process.env.EASYAPPLY_OPENAI_MODEL || "gpt-6-astra";
 export { AppError as LlmError } from "./server/errors";
 
 export const localCliAllowed = () => !isHosted() && (!isProduction() || process.env.EASYAPPLY_ALLOW_LOCAL_CLI === "1");
@@ -59,7 +56,7 @@ export async function runStructured<S extends z.ZodType>(opts: Options<S>): Prom
   const provider = await detectProvider();
   if (provider === "none") throw new AppError("no_provider", "AI 연결이 준비되지 않았어요. 잠시 후 다시 시도해 주세요.", 503);
   const effort = (process.env.EASYAPPLY_EFFORT || "medium") as Effort;
-  if (provider !== "openai" && !EFFORTS.includes(effort)) throw new AppError("configuration", "AI 연결 설정을 확인해 주세요.", 503);
+  if (!EFFORTS.includes(effort)) throw new AppError("configuration", "AI 연결 설정을 확인해 주세요.", 503);
   const deadline = opts.deadline ?? Date.now() + REQUEST_BUDGET_MS;
   for (let attempt = 1; ; attempt++) {
     const started = Date.now();
@@ -84,8 +81,7 @@ async function attemptStructured<S extends z.ZodType>(opts: Options<S>, provider
   try {
     if (limit <= 0) timeout.abort();
     signal.throwIfAborted();
-    const raw = provider === "openai" ? await viaOpenAI(opts, signal, log)
-      : provider === "api" ? await viaApi(opts, signal, effort, log) : await viaCli(opts, signal, effort);
+    const raw = provider === "api" ? await viaApi(opts, signal, effort, log) : await viaCli(opts, signal, effort);
     signal.throwIfAborted();
     const repaired = repairOutput(raw, opts.schema);
     if (repaired.repairs) {
@@ -102,8 +98,7 @@ async function attemptStructured<S extends z.ZodType>(opts: Options<S>, provider
     if (opts.signal?.aborted) throw new AppError("cancelled", "요청을 취소했어요.", 499);
     if (timeout.signal.aborted) throw new AppError("timeout", "분석 시간이 너무 오래 걸렸어요. 필요한 쪽만 나눠 다시 올려 주세요.", 504);
     if (e instanceof AppError) throw e;
-    const parseError = e instanceof OpenAI.OpenAIError ? e.cause : e;
-    if (parseError instanceof z.ZodError || parseError instanceof SyntaxError) throw new AppError("bad_output", "AI 결과 형식이 올바르지 않아요. 다시 시도해 주세요.", 502, undefined, { cause: e });
+    if (e instanceof z.ZodError || e instanceof SyntaxError) throw new AppError("bad_output", "AI 결과 형식이 올바르지 않아요. 다시 시도해 주세요.", 502, undefined, { cause: e });
     throw mapApiError(e, !!opts.files?.length);
   } finally { clearTimeout(timer); }
 }
@@ -113,11 +108,11 @@ function retryDelay(e: unknown): number | null {
   if (!(e instanceof AppError)) return null;
   if (e.code === "bad_output" || e.code === "incomplete") return 0;
   const cause = e.cause;
-  if (cause instanceof Anthropic.APIConnectionTimeoutError || cause instanceof OpenAI.APIConnectionTimeoutError) return null;
-  if (cause instanceof Anthropic.APIConnectionError || cause instanceof OpenAI.APIConnectionError) return 1000;
-  if (!(cause instanceof Anthropic.APIError || cause instanceof OpenAI.APIError)) return null;
+  if (cause instanceof Anthropic.APIConnectionTimeoutError) return null;
+  if (cause instanceof Anthropic.APIConnectionError) return 1000;
+  if (!(cause instanceof Anthropic.APIError)) return null;
   const status = cause.status;
-  const overloaded = cause instanceof Anthropic.APIError && (cause.type === "overloaded_error" || cause.type === "api_error");
+  const overloaded = cause.type === "overloaded_error" || cause.type === "api_error";
   if (status !== 429 && !(status !== undefined && status >= 500) && !overloaded) return null;
   const after = Number(cause.headers?.get("retry-after") ?? 0);
   // A long provider back-off would not fit in the request budget.
@@ -127,44 +122,6 @@ function retryDelay(e: unknown): number | null {
 
 function logUsage(log: Attempt, fields: Record<string, unknown>) {
   console.info(JSON.stringify({ event: "ai_usage", request_id: log.requestId ?? null, attempt: log.attempt, ...fields }));
-}
-
-async function viaOpenAI(opts: Options, signal: AbortSignal, log: Attempt): Promise<unknown> {
-  let settings: ReturnType<typeof openAIConfig>;
-  try { settings = openAIConfig(); }
-  catch { throw new AppError("configuration", "AI 모델 설정을 확인해 주세요.", 503); }
-  const client = new OpenAI({ maxRetries: 0, timeout: 260_000 });
-  const content: OpenAI.Responses.ResponseInputContent[] = [];
-  for (const f of opts.files ?? []) {
-    const data = `data:${f.mediaType};base64,${f.data.toString("base64")}`;
-    if (f.mediaType === "application/pdf") content.push({ type: "input_file", filename: "notice.pdf", file_data: data });
-    else content.push({ type: "input_image", image_url: data, detail: "high" });
-  }
-  content.push({ type: "input_text", text: opts.text });
-  const maxTokens = opts.maxTokens ?? analysisOutputTokens();
-  let response: OpenAI.Responses.Response;
-  try {
-    response = await client.responses.stream({
-      ...settings, instructions: opts.system, store: false,
-      max_output_tokens: maxTokens,
-      input: [{ role: "user", content }], text: { format: zodTextFormat(opts.schema, "easyapply_result") },
-    }, { signal }).finalResponse();
-  } catch (e) {
-    logUsage(log, { provider: "openai", outcome: "error", max_output_tokens: maxTokens, error: describeCause(e) });
-    throw e;
-  }
-  logUsage(log, { provider: "openai", model: response.model,
-    status: response.status, stop_reason: response.incomplete_details?.reason ?? null,
-    max_output_tokens: maxTokens,
-    requested_reasoning_effort: settings.reasoning.effort, reasoning_effort: response.reasoning?.effort ?? null,
-    requested_service_tier: settings.service_tier, service_tier: response.service_tier ?? null,
-    input_tokens: response.usage?.input_tokens, output_tokens: response.usage?.output_tokens,
-    reasoning_tokens: response.usage?.output_tokens_details?.reasoning_tokens ?? null });
-  if (response.output.some((o) => o.type === "message" && o.content.some((c) => c.type === "refusal"))) throw new AppError("refusal", "AI가 이 문서를 분석하지 못했어요. 다른 공고문으로 시도해 주세요.", 422);
-  if (response.status === "incomplete" && response.incomplete_details?.reason === "max_output_tokens") throw outputLimitError();
-  if (response.status !== "completed") throw new AppError("incomplete", "AI 분석이 끝나지 않았어요. 잠시 후 다시 시도해 주세요.", 502);
-  try { return JSON.parse(response.output_text); }
-  catch { throw new AppError("bad_output", "AI 응답을 읽지 못했어요.", 502); }
 }
 
 async function viaApi(opts: Options, signal: AbortSignal, effort: Effort, log: Attempt): Promise<unknown> {
@@ -220,19 +177,27 @@ function outputLimitError() {
 
 export function mapApiError(e: unknown, sentFiles = false): AppError {
   const cause = { cause: e };
-  if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError || e instanceof OpenAI.AuthenticationError || e instanceof OpenAI.PermissionDeniedError) return new AppError("provider_auth", "AI 서비스 인증을 확인 중이에요. 관리자에게 문의해 주세요.", 503, undefined, cause);
-  if (e instanceof Anthropic.RateLimitError || e instanceof OpenAI.RateLimitError) return new AppError("provider_rate_limit", "AI 요청이 많거나 사용 한도에 도달했어요. 잠시 후 다시 시도해 주세요.", 429, 60, cause);
+  if (e instanceof Anthropic.APIError && isCreditError(e)) return new AppError("provider_credit", "AI 사용 크레딧이 바닥났어요. 관리자에게 알려 주세요.", 503, undefined, cause);
+  if (e instanceof Anthropic.AuthenticationError || e instanceof Anthropic.PermissionDeniedError) return new AppError("provider_auth", "AI 서비스 인증을 확인 중이에요. 관리자에게 문의해 주세요.", 503, undefined, cause);
+  if (e instanceof Anthropic.RateLimitError) return new AppError("provider_rate_limit", "AI 요청이 많거나 사용 한도에 도달했어요. 잠시 후 다시 시도해 주세요.", 429, 60, cause);
   if (e instanceof Anthropic.ContentTooLargeError) return new AppError("too_large", "문서가 너무 커요. 필요한 쪽만 나눠 올려 주세요.", 413, undefined, cause);
-  if (e instanceof Anthropic.BadRequestError || e instanceof OpenAI.BadRequestError) return badRequestError(e, sentFiles);
-  if (e instanceof Anthropic.APIConnectionTimeoutError || e instanceof OpenAI.APIConnectionTimeoutError) return new AppError("timeout", "AI 서버 응답 시간이 초과됐어요. 다시 시도해 주세요.", 504, undefined, cause);
-  if (e instanceof Anthropic.APIConnectionError || e instanceof OpenAI.APIConnectionError) return new AppError("network", "AI 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.", 502, undefined, cause);
+  if (e instanceof Anthropic.BadRequestError) return badRequestError(e, sentFiles);
+  if (e instanceof Anthropic.APIConnectionTimeoutError) return new AppError("timeout", "AI 서버 응답 시간이 초과됐어요. 다시 시도해 주세요.", 504, undefined, cause);
+  if (e instanceof Anthropic.APIConnectionError) return new AppError("network", "AI 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.", 502, undefined, cause);
+  if (e instanceof Anthropic.APIError && e.type === "timeout_error") return new AppError("timeout", "AI 서버 응답 시간이 초과됐어요. 다시 시도해 주세요.", 504, undefined, cause);
+  if (e instanceof Anthropic.APIError && (e.status === 529 || e.type === "overloaded_error")) return new AppError("provider_overloaded", "지금 AI 사용자가 많아요. 잠시 후 다시 시도해 주세요.", 503, 30, cause);
   return new AppError("upstream", "AI 처리 중 오류가 발생했어요. 잠시 후 다시 시도해 주세요.", 502, undefined, cause);
+}
+
+// Anthropic reports an empty balance as a 400 "credit balance is too low" or a billing_error.
+function isCreditError(e: InstanceType<typeof Anthropic.APIError>) {
+  return e.status === 402 || e.type === "billing_error" || /credit balance/i.test(e.apiMessage ?? e.message);
 }
 
 // Most 400s come from our own request (schema, grammar, parameters), so only
 // messages about the document itself are reported as the user's file.
-function badRequestError(e: Error, sentFiles: boolean) {
-  const message = (e instanceof Anthropic.APIError ? e.apiMessage : null) ?? e.message;
+function badRequestError(e: InstanceType<typeof Anthropic.APIError>, sentFiles: boolean) {
+  const message = e.apiMessage ?? e.message;
   if (/prompt is too long/i.test(message)) return new AppError("too_large", "문서가 너무 커요. 필요한 쪽만 나눠 올려 주세요.", 413, undefined, { cause: e });
   if (sentFiles && /pdf|image|document|base64|media|page/i.test(message)) {
     return new AppError("provider_input", "AI가 이 파일을 처리하지 못했어요. PDF나 사진을 다시 저장해 올려 주세요.", 422, undefined, { cause: e });

@@ -2,6 +2,7 @@ import { z } from "zod";
 import { MatchSchema, type Analysis, type Answers, type Match } from "../schema";
 import { AppError } from "./errors";
 import { deadlineEnd, deadlinePassed, kstISO, looksLikeApplication, reconcileDates } from "../dates";
+import { sanitizeRules } from "../finder";
 
 const invalidOutput = () => new AppError("bad_output", "AI 결과에 누락되거나 서로 맞지 않는 정보가 있어요. 다시 분석해 주세요.", 502);
 function unique(values: (string | number)[]) { return new Set(values).size === values.length; }
@@ -20,6 +21,8 @@ export function validateAnalysis(a: Analysis, pageCount?: number) {
   if (pageCount && [...evidence, ...a.transcript].some((e) => e.page > pageCount)) throw invalidOutput();
   // 일정 날짜를 원문 표기와 대조해 맞지 않으면 비운다(제자리 수정, 여러 번 불러도 같다).
   reconcileDates(a);
+  // 비교 규칙의 숫자·지역명이 조건의 원문 인용에 없으면 규칙을 지운다.
+  sanitizeRules(a);
 }
 
 const STARTS = /시작|개시/;
